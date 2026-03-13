@@ -35,7 +35,7 @@ function M.setup(app)
   local prev_action_read = params.action_read
   local prev_action_delete = params.action_delete
 
-  params:add_group("permute_seq", "permute", 19)
+  params:add_group("permute_seq", "permute", 24)
 
   params:add_option("permute_scale", "scale", SCALE_NAMES, 2)
   params:set_action("permute_scale", function(v)
@@ -131,6 +131,26 @@ function M.setup(app)
     end
   end)
 
+  params:add_number("permute_spice_accum_min", "spice accum min", -127, 127, cfg.SPICE_MIN)
+  params:set_action("permute_spice_accum_min", function(v)
+    local max_v = params:get("permute_spice_accum_max")
+    if v > max_v then
+      params:set("permute_spice_accum_max", v)
+      return
+    end
+    app:set_spice_accum_bounds(v, max_v)
+  end)
+
+  params:add_number("permute_spice_accum_max", "spice accum max", -127, 127, cfg.SPICE_MAX)
+  params:set_action("permute_spice_accum_max", function(v)
+    local min_v = params:get("permute_spice_accum_min")
+    if v < min_v then
+      params:set("permute_spice_accum_min", v)
+      return
+    end
+    app:set_spice_accum_bounds(min_v, v)
+  end)
+
   params:add_option("permute_crow_enabled", "crow enabled", { "off", "on" }, 1)
   params:set_action("permute_crow_enabled", function(v)
     app.crow_enabled = (v == 2)
@@ -162,11 +182,26 @@ function M.setup(app)
   params:add_trigger("permute_stop", "stop")
   params:set_action("permute_stop", function() app:stop() end)
 
+  params:add_trigger("permute_save_default", "save as default")
+  params:set_action("permute_save_default", function()
+    app:save_default_setup(true)
+  end)
+
+  params:add_trigger("permute_reload_default", "reload default")
+  params:set_action("permute_reload_default", function()
+    app:load_default_setup(true)
+  end)
+
+  params:add_trigger("permute_clear_default", "clear default (factory)")
+  params:set_action("permute_clear_default", function()
+    app:clear_default_setup(true)
+  end)
+
   for t = 1, cfg.NUM_TRACKS do
     local tc = cfg.TRACK_CFG[t]
     local gid = "permute_track_" .. t
 
-    params:add_group(gid, "track " .. t .. " config", 3)
+    params:add_group(gid, "track " .. t .. " config", 4)
 
     local type_idx = 1
     for i, v in ipairs(TRACK_TYPES) do
@@ -184,12 +219,21 @@ function M.setup(app)
 
     params:add_number(gid .. "_ch", "midi channel", 1, 16, tc.ch)
     params:set_action(gid .. "_ch", function(v)
+      if app.push_undo_state and tc.ch ~= clamp(tonumber(v) or tc.ch, 1, 16) then app:push_undo_state() end
       tc.ch = clamp(tonumber(v) or tc.ch, 1, 16)
+    end)
+
+    params:add_number(gid .. "_note", "base note", 0, 127, tc.note)
+    params:set_action(gid .. "_note", function(v)
+      if app.push_undo_state and tc.note ~= clamp(tonumber(v) or tc.note, 0, 127) then app:push_undo_state() end
+      tc.note = clamp(tonumber(v) or tc.note, 0, 127)
     end)
 
     params:add_number(gid .. "_len", "default note length", 1, 24, app.track_gate_ticks[t])
     params:set_action(gid .. "_len", function(v)
-      app.track_gate_ticks[t] = clamp(tonumber(v) or app.track_gate_ticks[t] or 1, 1, 24)
+      local next_len = clamp(tonumber(v) or app.track_gate_ticks[t] or 1, 1, 24)
+      if app.push_undo_state and app.track_gate_ticks[t] ~= next_len then app:push_undo_state() end
+      app.track_gate_ticks[t] = next_len
     end)
   end
 

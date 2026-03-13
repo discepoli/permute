@@ -81,6 +81,7 @@ function App.new()
 
   self.mod_held = {}
   self.mod_last_tap_time = {}
+  self.mod_shortcut_consumed = {}
   self.sel_track = nil
   self.temp_steps = {}
   self.temp_latched = false
@@ -95,8 +96,14 @@ function App.new()
   self.fill_active = false
   self.spice = {}
   self.spice_pending_amount = nil
+  self.spice_accum_min = cfg.SPICE_MIN
+  self.spice_accum_max = cfg.SPICE_MAX
   self.track_transpose = {}
   self.track_gate_ticks = {}
+  self.undo_stack = {}
+  self.redo_stack = {}
+  self.history_limit = 5
+  self.suspend_history = false
 
   self.master_seq_len_enabled = false
   self.master_seq_len = cfg.DEFAULT_MASTER_SEQ_LEN
@@ -174,6 +181,150 @@ function App:preset_path(number)
   return self:preset_dir() .. "pset-" .. tostring(number or 0) .. ".data"
 end
 
+function App:default_setup_path()
+  return self:preset_dir() .. "default-setup.data"
+end
+
+function App:default_setup_param_ids()
+  local ids = {
+    "permute_scale",
+    "permute_key",
+    "permute_scale_degree",
+    "permute_tempo",
+    "permute_master_len_enabled",
+    "permute_master_len",
+    "permute_ext_clock",
+    "permute_send_clock_out",
+    "permute_send_start_stop_out",
+    "permute_midi_out",
+    "permute_melody_gate_ticks",
+    "permute_drum_gate_ticks",
+    "permute_spice_accum_min",
+    "permute_spice_accum_max",
+    "permute_crow_enabled",
+    "permute_crow_track_1",
+    "permute_crow_track_2",
+    "permute_redraw_fps"
+  }
+
+  for t = 1, cfg.NUM_TRACKS do
+    local gid = "permute_track_" .. t
+    ids[#ids + 1] = gid .. "_type"
+    ids[#ids + 1] = gid .. "_ch"
+    ids[#ids + 1] = gid .. "_note"
+    ids[#ids + 1] = gid .. "_len"
+  end
+
+  return ids
+end
+
+function App:set_spice_accum_bounds(min_v, max_v)
+  local lo = clamp(tonumber(min_v) or cfg.SPICE_MIN, -127, 127)
+  local hi = clamp(tonumber(max_v) or cfg.SPICE_MAX, -127, 127)
+  if lo > hi then lo, hi = hi, lo end
+  self.spice_accum_min = lo
+  self.spice_accum_max = hi
+end
+
+function App:capture_default_setup_values()
+  local values = {}
+  for _, id in ipairs(self:default_setup_param_ids()) do
+    local ok, val = pcall(function() return params:get(id) end)
+    if ok and val ~= nil then values[id] = val end
+  end
+  return values
+end
+
+function App:flash_status(label, value, duration)
+  self.status_message = tostring(label or "")
+  self.status_value = value and tostring(value) or nil
+  self.status_mod_id = nil
+  self.status_message_invert = true
+  self.status_message_until = (util.time() or 0) + (duration or 0.4)
+  self:request_redraw()
+  local expires_at = self.status_message_until
+  clock.run(function()
+    clock.sleep((duration or 0.4) + 0.01)
+    if self.status_message_until == expires_at then
+      self.status_message = nil
+      self.status_value = nil
+      self.status_mod_id = nil
+      self.status_message_invert = false
+      self:request_redraw()
+    end
+  end)
+end
+
+function App:save_default_setup(show_feedback)
+  if not tab or not tab.save then return false end
+  ensure_dir(self:preset_dir())
+
+  local values = self:capture_default_setup_values()
+
+  tab.save({ params = values }, self:default_setup_path())
+  if show_feedback then self:flash_status("default", "saved") end
+  return true
+end
+
+function App:load_default_setup(show_feedback)
+  if not tab or not tab.load then return false end
+  local loaded = tab.load(self:default_setup_path())
+  if type(loaded) ~= "table" then
+    if show_feedback then self:flash_status("default", "missing") end
+    return false
+  end
+
+  local values = loaded.params or loaded
+  if type(values) ~= "table" then
+    if show_feedback then self:flash_status("default", "invalid") end
+    return false
+  end
+
+  self:stop_all_notes()
+  local was_suspended = self.suspend_history
+  self.suspend_history = true
+  for _, id in ipairs(self:default_setup_param_ids()) do
+    local val = values[id]
+    if val ~= nil then
+      pcall(function() params:set(id, val) end)
+    end
+  end
+  self.suspend_history = was_suspended
+  self:request_redraw()
+
+  if show_feedback then self:flash_status("default", "loaded") end
+  return true
+end
+
+function App:load_factory_default_setup(show_feedback)
+  if type(self.factory_default_setup_values) ~= "table" then
+    if show_feedback then self:flash_status("default", "missing") end
+    return false
+  end
+
+  self:stop_all_notes()
+  local was_suspended = self.suspend_history
+  self.suspend_history = true
+  for _, id in ipairs(self:default_setup_param_ids()) do
+    local val = self.factory_default_setup_values[id]
+    if val ~= nil then
+      pcall(function() params:set(id, val) end)
+    end
+  end
+  self.suspend_history = was_suspended
+  self:request_redraw()
+
+  if show_feedback then self:flash_status("default", "factory") end
+  return true
+end
+
+function App:clear_default_setup(show_feedback)
+  local removed = (os.remove(self:default_setup_path()) ~= nil)
+  self:load_factory_default_setup(false)
+  if show_feedback then self:flash_status("default", removed and "cleared" or "factory") end
+  return true
+end
+
 function App:export_state()
   return {
     tracks = deep_copy_table(self.tracks),
@@ -191,6 +342,8 @@ function App:export_state()
     master_seq_len = self.master_seq_len,
     send_midi_clock_out = self.send_midi_clock_out,
     send_midi_start_stop_out = self.send_midi_start_stop_out,
+    spice_accum_min = self.spice_accum_min,
+    spice_accum_max = self.spice_accum_max,
     scale_type = self.scale_type,
     key_root = self.key_root,
     key_transpose = self.key_transpose,
@@ -219,6 +372,7 @@ function App:import_state(state)
   self.master_seq_len = clamp(tonumber(state.master_seq_len) or cfg.DEFAULT_MASTER_SEQ_LEN, 1, cfg.MAX_MASTER_SEQ_LEN)
   if state.send_midi_clock_out ~= nil then self.send_midi_clock_out = not not state.send_midi_clock_out end
   if state.send_midi_start_stop_out ~= nil then self.send_midi_start_stop_out = not not state.send_midi_start_stop_out end
+  self:set_spice_accum_bounds(state.spice_accum_min, state.spice_accum_max)
   self.scale_type = state.scale_type or self.scale_type
   self.key_root = clamp(tonumber(state.key_root) or self.key_root or 0, 0, 11)
   self.key_transpose = clamp(tonumber(state.key_transpose) or self.key_transpose or 0, -7, 8)
@@ -254,6 +408,86 @@ function App:import_state(state)
   end
 
   self:request_redraw()
+end
+
+function App:export_undo_state()
+  return {
+    app_state = self:export_state(),
+    track_cfg = deep_copy_table(cfg.TRACK_CFG)
+  }
+end
+
+function App:import_undo_state(state)
+  if type(state) ~= "table" then return end
+
+  if type(state.track_cfg) == "table" then
+    for t = 1, cfg.NUM_TRACKS do
+      local src = state.track_cfg[t]
+      if src then
+        if type(cfg.TRACK_CFG[t]) ~= "table" then cfg.TRACK_CFG[t] = {} end
+        cfg.TRACK_CFG[t].type = src.type or cfg.TRACK_CFG[t].type
+        cfg.TRACK_CFG[t].ch = clamp(tonumber(src.ch) or cfg.TRACK_CFG[t].ch or 1, 1, 16)
+        cfg.TRACK_CFG[t].note = clamp(tonumber(src.note) or cfg.TRACK_CFG[t].note or 60, 0, 127)
+      end
+    end
+    if params and params.set then
+      for t = 1, cfg.NUM_TRACKS do
+        local tc = cfg.TRACK_CFG[t]
+        if tc then
+          local gid = "permute_track_" .. t
+          local type_idx = (tc.type == "drum") and 1 or ((tc.type == "mono") and 2 or 3)
+          pcall(function() params:set(gid .. "_type", type_idx) end)
+          pcall(function() params:set(gid .. "_ch", clamp(tonumber(tc.ch) or 1, 1, 16)) end)
+          pcall(function() params:set(gid .. "_note", clamp(tonumber(tc.note) or 60, 0, 127)) end)
+        end
+      end
+    end
+  end
+
+  self:import_state(state.app_state or state)
+end
+
+function App:push_undo_state()
+  if self.suspend_history then return end
+  self.undo_stack[#self.undo_stack + 1] = self:export_undo_state()
+  while #self.undo_stack > self.history_limit do
+    table.remove(self.undo_stack, 1)
+  end
+  self.redo_stack = {}
+end
+
+function App:undo_last_action()
+  if #self.undo_stack == 0 then return false end
+
+  local previous = table.remove(self.undo_stack)
+  self.redo_stack[#self.redo_stack + 1] = self:export_undo_state()
+  while #self.redo_stack > self.history_limit do
+    table.remove(self.redo_stack, 1)
+  end
+
+  self.suspend_history = true
+  self:stop_all_notes()
+  self:import_undo_state(previous)
+  self.suspend_history = false
+  self:request_redraw()
+  return true
+end
+
+function App:redo_last_action()
+  if #self.redo_stack == 0 then return false end
+
+  local next_state = table.remove(self.redo_stack)
+  self.undo_stack[#self.undo_stack + 1] = self:export_undo_state()
+  while #self.undo_stack > self.history_limit do
+    table.remove(self.undo_stack, 1)
+  end
+
+  self.suspend_history = true
+  self:stop_all_notes()
+  self:import_undo_state(next_state)
+  self.suspend_history = false
+  self:request_redraw()
+  return true
 end
 
 function App:save_preset(number)
@@ -587,7 +821,27 @@ function App:handle_mod_row(x, z)
     return
   end
 
+  if z == 0 and self.mod_shortcut_consumed[x] then
+    self.mod_shortcut_consumed[x] = nil
+    self:request_redraw()
+    return
+  end
+
   if z == 1 then
+    if x == cfg.MOD.SPICE and self.mod_held[cfg.MOD.SHIFT] then
+      self.mod_shortcut_consumed[x] = true
+      self:flash_mod_applied(cfg.MOD.SPICE, self:undo_last_action() and "undo" or "empty")
+      self:request_redraw()
+      return
+    end
+
+    if x == cfg.MOD.BEAT_RPT and self.mod_held[cfg.MOD.SHIFT] then
+      self.mod_shortcut_consumed[x] = true
+      self:flash_mod_applied(cfg.MOD.BEAT_RPT, self:redo_last_action() and "redo" or "empty")
+      self:request_redraw()
+      return
+    end
+
     if x == cfg.MOD.TEMP or x == cfg.MOD.FILL then
       local now = now_ms()
       local is_temp = (x == cfg.MOD.TEMP)
@@ -631,9 +885,15 @@ function App:handle_mod_row(x, z)
     end
 
     if self.mod_held[cfg.MOD.CLEAR] and self.mod_held[cfg.MOD.SHIFT] then
-      if x ~= cfg.MOD.CLEAR and x ~= cfg.MOD.SHIFT then self:clear_modifier_all_tracks(x) end
+      if x ~= cfg.MOD.CLEAR and x ~= cfg.MOD.SHIFT then
+        self:push_undo_state()
+        self:clear_modifier_all_tracks(x)
+      end
     elseif self.mod_held[cfg.MOD.CLEAR] and self.sel_track then
-      if x ~= cfg.MOD.CLEAR then self:clear_modifier_for_track(x, self.sel_track) end
+      if x ~= cfg.MOD.CLEAR then
+        self:push_undo_state()
+        self:clear_modifier_for_track(x, self.sel_track)
+      end
     end
     self.mod_held[x] = true
     self.last_mod_pressed = x
@@ -672,6 +932,7 @@ end
 
 function App:handle_dynamic_row(x, z)
   if z == 1 then
+    self:push_undo_state()
     local applied_value = nil
     local applied_mod = self:get_active_mod_id()
 
@@ -859,6 +1120,8 @@ function App:set_track_type(t, new_type)
 
   local tc = cfg.TRACK_CFG[track]
   if not tc or tc.type == new_type then return end
+
+  self:push_undo_state()
 
   local old_type = tc.type
   local tr = self:ensure_track_state(track)
@@ -1075,10 +1338,10 @@ function App:play_tracks(pulse_scale)
       local sp = self.spice[t] and self.spice[t][st]
       if sp and sp.amount ~= 0 then
         sp.current = (tonumber(sp.current) or 0) + (tonumber(sp.amount) or 0)
-        if sp.current > cfg.SPICE_MAX then
-          sp.current = cfg.SPICE_MIN
-        elseif sp.current < cfg.SPICE_MIN then
-          sp.current = cfg.SPICE_MAX
+        if sp.current > self.spice_accum_max then
+          sp.current = self.spice_accum_min
+        elseif sp.current < self.spice_accum_min then
+          sp.current = self.spice_accum_max
         end
       end
     end
@@ -1666,6 +1929,9 @@ function App:redraw_screen()
     screen.level(15)
     screen.move(0, 12)
     screen.text("hold T" .. tostring(t) .. " S" .. tostring(s))
+    screen.level(10)
+    screen.move(0, 22)
+    screen.text("midi ch: " .. tostring(tc.ch))
     if tc.type == "drum" then
       screen.level(12)
       screen.move(0, 32)
@@ -1733,8 +1999,9 @@ function App:grid_event(x, y, z)
       local tc = cfg.TRACK_CFG[t]
 
       if z == 1 then
+        self:push_undo_state()
         self.held_time = now_ms()
-        self.held = { t = t, s = x, was_on = tr.gates[x] }
+        self.held = { t = t, s = x, y = y, was_on = tr.gates[x] }
 
         local applied_mod = self:get_active_mod_id()
         local applied_value = nil
@@ -1810,12 +2077,21 @@ function App:grid_event(x, y, z)
           self.spice[t][x] = nil
           applied_value = "clear"
         elseif tc.type == "drum" then
-          local level = 16 - y
-          if tr.gates[x] then
-            if tr.vels[x] == level then tr.gates[x] = false else tr.vels[x] = clamp(level, 1, 15) end
+          local level = clamp(16 - y, 1, 15)
+          if y == cfg.DYN_ROW then
+            if tr.gates[x] then
+              tr.gates[x] = false
+            else
+              tr.gates[x] = true
+              tr.vels[x] = cfg.DEFAULT_VEL_LEVEL
+            end
           else
-            tr.gates[x] = true
-            tr.vels[x] = clamp(level, 1, 15)
+            if tr.gates[x] then
+              tr.vels[x] = level
+            else
+              tr.gates[x] = true
+              tr.vels[x] = level
+            end
           end
         else
           local degree = 16 - y
@@ -1835,7 +2111,7 @@ function App:grid_event(x, y, z)
       else
         if self.held and self.held.t == t and self.held.s == x then
           local hold_duration = now_ms() - self.held_time
-          if hold_duration < self.HOLD_THRESHOLD and self.held.was_on then tr.gates[x] = false end
+          if hold_duration < self.HOLD_THRESHOLD and self.held.was_on and self.held.y == cfg.DYN_ROW then tr.gates[x] = false end
         end
         self.held = nil
       end
@@ -1859,6 +2135,7 @@ function App:grid_event(x, y, z)
   local t = self:row_to_track(y)
   if t and t >= 1 and t <= cfg.NUM_TRACKS then
     if z == 1 then
+      self:push_undo_state()
       self.held_time = now_ms()
       if self.speed_mode then
         self.sel_track = t
@@ -1892,7 +2169,7 @@ function App:grid_event(x, y, z)
         end
         self.sel_track = t
       elseif self:mod_active(cfg.MOD.TEMP) then
-        self.held = { t = t, s = x, was_on = self.tracks[t].gates[x] }
+        self.held = { t = t, s = x, y = y, was_on = self.tracks[t].gates[x] }
         if not self.tracks[t].gates[x] then
           self.tracks[t].gates[x] = true
           self.tracks[t].vels[x] = cfg.DEFAULT_VEL_LEVEL
@@ -1905,7 +2182,7 @@ function App:grid_event(x, y, z)
       elseif self:any_mod_active() then
         self.sel_track = t
       else
-        self.held = { t = t, s = x, was_on = self.tracks[t].gates[x] }
+        self.held = { t = t, s = x, y = y, was_on = self.tracks[t].gates[x] }
         if not self.tracks[t].gates[x] then
           self.tracks[t].gates[x] = true
           self.tracks[t].vels[x] = cfg.DEFAULT_VEL_LEVEL
@@ -2047,6 +2324,8 @@ function App:init()
 
   self:connect_midi(1)
   param_setup.setup(self)
+  self.factory_default_setup_values = self:capture_default_setup_values()
+  self:load_default_setup(false)
 
   self.grid_timer = metro.init(function()
     if self.grid_dirty then
