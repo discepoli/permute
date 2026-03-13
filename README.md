@@ -60,6 +60,11 @@ Hold a modifier key and interact with tracks/steps to apply its effect. Some mod
 **Combo modifiers:**
 - **Start + End** held together enters **Speed Mode** -- use the dynamic row to set per-track clock multiplier/divider
 - **Rand Notes + Rand Steps** held together randomizes both simultaneously
+- **Shift + Fill** -- save current pattern to slot (use dynamic row to select slot 1-4)
+- **Shift + Temp** -- load pattern from slot (use dynamic row to select slot 1-4)
+- **Shift + Spice** -- undo last action (up to 5 undos)
+- **Shift + Beat Rpt** -- redo last action (up to 5 redos)
+- **Shift + Clear** -- clear all tracks (instead of just the selected track)
 
 ## Scales
 
