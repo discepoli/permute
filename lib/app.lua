@@ -130,6 +130,11 @@ function App.new()
   self.internal_clock_id = nil
 
   self.grid_dev = nil
+  self.main_grid_dev = nil
+  self.aux_grid_dev = nil
+  self.grid_ports = {}
+  self.main_grid_port = nil
+  self.aux_grid_port = nil
   self.midi_dev = nil
   self.midi_devs = {}
   self.midi_port_slots = { 1, 0, 0, 0 }
@@ -1141,6 +1146,121 @@ function App:vel_to_midi(level)
   return clamp(level * 8 + 1, 1, 127)
 end
 
+function App:is_aux_grid_device(dev)
+  local device = dev and dev.device
+  return device
+    and device.cols == cfg.AUX_GRID_COLS
+    and device.rows == cfg.AUX_GRID_ROWS
+end
+
+function App:attach_grid_port(port)
+  if not grid or not grid.connect then return nil end
+  local dev = grid.connect(port)
+  if dev then
+    dev.key = function(x, y, z)
+      self:handle_grid_key(port, x, y, z)
+    end
+  end
+  self.grid_ports[port] = dev
+  return dev
+end
+
+function App:get_connected_grid_devices()
+  local connected = {}
+  for _, dev in pairs(self.grid_ports or {}) do
+    if dev and dev.device then
+      connected[#connected + 1] = dev
+    end
+  end
+  table.sort(connected, function(a, b)
+    return (a.device.port or 0) < (b.device.port or 0)
+  end)
+  return connected
+end
+
+function App:refresh_grid_assignments()
+  local connected = self:get_connected_grid_devices()
+  local main = nil
+  local aux = nil
+
+  if #connected == 1 then
+    main = connected[1]
+  elseif #connected > 1 then
+    for _, dev in ipairs(connected) do
+      if not self:is_aux_grid_device(dev) then
+        main = dev
+        break
+      end
+    end
+
+    if not main then
+      main = connected[1]
+    end
+
+    for _, dev in ipairs(connected) do
+      if dev ~= main and self:is_aux_grid_device(dev) then
+        aux = dev
+        break
+      end
+    end
+  end
+
+  self.main_grid_dev = main
+  self.aux_grid_dev = aux
+  self.main_grid_port = main and main.device and main.device.port or nil
+  self.aux_grid_port = aux and aux.device and aux.device.port or nil
+  self.grid_dev = self.main_grid_dev
+end
+
+function App:handle_grid_key(port, x, y, z)
+  if port == self.aux_grid_port then
+    self:handle_aux_grid_event(x, y, z)
+    return
+  end
+  if port == self.main_grid_port then
+    self:handle_main_grid_event(x, y, z)
+  end
+end
+
+function App:aux_row_to_degree(y)
+  return clamp(cfg.AUX_GRID_ROWS - y + 1, 1, cfg.AUX_GRID_ROWS)
+end
+
+function App:degree_to_aux_row(degree)
+  local d = clamp(tonumber(degree) or 1, 1, cfg.AUX_GRID_ROWS)
+  return cfg.AUX_GRID_ROWS - d + 1
+end
+
+function App:aux_row_to_vel_level(y)
+  return clamp(17 - (y * 2), 1, 15)
+end
+
+function App:vel_level_to_aux_row(level)
+  local stored = clamp(tonumber(level) or cfg.DEFAULT_VEL_LEVEL, 1, 15)
+  return clamp(cfg.AUX_GRID_ROWS - math.floor((stored - 1) / 2), 1, cfg.AUX_GRID_ROWS)
+end
+
+function App:is_aux_degree_above_visible_octave(track, stored_degree)
+  return self:get_pitch(track, clamp(tonumber(stored_degree) or 1, 1, 16), 0)
+    > self:get_pitch(track, cfg.AUX_GRID_ROWS, 0)
+end
+
+function App:get_closest_aux_degree(track, stored_degree)
+  local target = self:get_pitch(track, clamp(tonumber(stored_degree) or 1, 1, 16), 0)
+  local best_degree = 1
+  local best_distance = nil
+
+  for degree = 1, cfg.AUX_GRID_ROWS do
+    local distance = math.abs(self:get_pitch(track, degree, 0) - target)
+    if best_distance == nil or distance < best_distance then
+      best_distance = distance
+      best_degree = degree
+    end
+  end
+
+  return best_degree
+end
+
 function App:poly_has_pitch(pv, degree)
   if type(pv) ~= "table" then return false end
   for _, d in ipairs(pv) do
@@ -1161,6 +1281,24 @@ function App:poly_toggle_pitch(pv, degree)
       end
     end
   end
+  if not found then out[#out + 1] = degree end
+  return out
+end
+
+function App:poly_toggle_aux_degree(track, pv, degree)
+  local out = {}
+  local found = false
+
+  if type(pv) == "table" then
+    for _, stored_degree in ipairs(pv) do
+      if self:get_closest_aux_degree(track, stored_degree) == degree then
+        found = true
+      else
+        out[#out + 1] = stored_degree
+      end
+    end
+  end
+
   if not found then out[#out + 1] = degree end
   return out
 end
@@ -1935,17 +2073,11 @@ function App:draw_takeover()
   self:grid_led(cfg.MOD.TAKEOVER, cfg.MOD_ROW, 15)
 end
 
-function App:redraw_grid(force)
-  if not self.grid_dev then return end
-  if not force then
-    local now = now_ms()
-    if self.playing and self.use_midi_clock and (now - (self.last_redraw_time or 0) < self.redraw_min_ms) then
-      self.redraw_deferred = true
-      return
-    end
-  end
+function App:redraw_main_grid()
+  local dev = self.main_grid_dev
+  if not dev then return end
 
-  self.grid_dev:all(0)
+  dev:all(0)
   if self.takeover_mode and self.sel_track then
     self:draw_takeover()
     if self:is_modifier_dynamic_row_active() then
@@ -1983,20 +2115,145 @@ function App:redraw_grid(force)
           if in_range then lv = math.max(lv + 2, 6) else lv = math.max(lv, 3) end
         end
 
-        if lv > 0 then self.grid_dev:led(s, y, lv) end
+        if lv > 0 then dev:led(s, y, lv) end
       end
     end
     self:draw_dynamic_row()
     self:draw_mod_row()
   end
 
-  self.grid_dev:refresh()
+  dev:refresh()
+end
+
+function App:redraw_aux_grid()
+  local dev = self.aux_grid_dev
+  if not dev then return end
+
+  dev:all(0)
+
+  if not self.sel_track then
+    dev:refresh()
+    return
+  end
+
+  local t = clamp(tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+  local tr = self:ensure_track_state(t)
+  local tc = cfg.TRACK_CFG[t]
+  local fills = self.fill_patterns[t] or {}
+  local current_step = self:get_track_step(t)
+  local lo, hi = self:get_track_bounds(tr)
+  local scale = cfg.SCALES[self.scale_type] or cfg.SCALES.chromatic
+
+  if tc.type == "drum" then
+    for s = 1, cfg.NUM_STEPS do
+      local in_range = s >= lo and s <= hi
+      local is_playhead = (s == current_step and self.playing)
+      local fill = fills[s]
+      local top_row = nil
+      local lv = 0
+
+      if tr.gates[s] then
+        top_row = self:vel_level_to_aux_row(tr.vels[s])
+        lv = is_playhead and 15 or 12
+      elseif fill then
+        top_row = self:vel_level_to_aux_row(fill.vel)
+        lv = is_playhead and 10 or 6
+      end
+
+      if top_row then
+        if not in_range then lv = math.max(1, math.floor(lv / 2)) end
+        for row = top_row, cfg.AUX_GRID_ROWS do
+          self:grid_led(dev, s, row, lv)
+        end
+      elseif in_range or is_playhead then
+        self:grid_led(dev, s, cfg.AUX_GRID_ROWS, is_playhead and 2 or 1)
+      end
+    end
+  else
+    for s = 1, cfg.NUM_STEPS do
+      local in_range = s >= lo and s <= hi
+      local is_playhead = (s == current_step and self.playing)
+      local fill = fills[s]
+      local fill_degree = fill and self:get_closest_aux_degree(t, fill.pitch) or nil
+      local fill_above = fill and self:is_aux_degree_above_visible_octave(t, fill.pitch) or false
+
+      for degree = 1, cfg.AUX_GRID_ROWS do
+        local row = self:degree_to_aux_row(degree)
+        local is_root = ((degree - 1) % #scale) == 0
+        local is_on = false
+        local is_fill = false
+        local is_above = false
+
+        if tr.gates[s] then
+          if tc.type == "poly" then
+            for _, stored_degree in ipairs(tr.pitches[s]) do
+              if self:get_closest_aux_degree(t, stored_degree) == degree then
+                is_on = true
+                is_above = self:is_aux_degree_above_visible_octave(t, stored_degree)
+                break
+              end
+            end
+          else
+            is_on = self:get_closest_aux_degree(t, tr.pitches[s]) == degree
+            if is_on then
+              is_above = self:is_aux_degree_above_visible_octave(t, tr.pitches[s])
+            end
+          end
+        elseif fill_degree then
+          is_fill = degree == fill_degree
+          is_above = fill_above
+        end
+
+        if is_on then
+          local lv = is_above and ((is_playhead and 7) or 5) or ((is_playhead and 15) or 12)
+          if not in_range then lv = math.max(1, math.floor(lv / 2)) end
+          self:grid_led(dev, s, row, lv)
+        elseif is_fill then
+          local lv = is_above and ((is_playhead and 6) or 4) or ((is_playhead and 10) or 6)
+          if not in_range then lv = math.max(1, math.floor(lv / 2)) end
+          self:grid_led(dev, s, row, lv)
+        elseif is_root and in_range then
+          self:grid_led(dev, s, row, 2)
+        elseif is_playhead and in_range then
+          self:grid_led(dev, s, row, 1)
+        end
+      end
+    end
+  end
+
+  dev:refresh()
+end
+
+function App:redraw_grid(force)
+  if not self.main_grid_dev and not self.aux_grid_dev then return end
+  if not force then
+    local now = now_ms()
+    if self.playing and self.use_midi_clock and (now - (self.last_redraw_time or 0) < self.redraw_min_ms) then
+      self.redraw_deferred = true
+      return
+    end
+  end
+
+  self:redraw_main_grid()
+  self:redraw_aux_grid()
   self.last_redraw_time = now_ms()
   self.redraw_deferred = false
 end
 
-function App:grid_led(x, y, l)
-  if self.grid_dev then self.grid_dev:led(x, y, l) end
+function App:grid_led(a, b, c, d)
+  local dev = self.main_grid_dev
+  local x = a
+  local y = b
+  local l = c
+
+  if d ~= nil then
+    dev = a
+    x = b
+    y = c
+    l = d
+  end
+
+  if dev then dev:led(x, y, l) end
 end
 
 function App:request_redraw()
@@ -2117,7 +2374,37 @@ function App:redraw_screen()
   self.screen_dirty = false
 end
 
-function App:grid_event(x, y, z)
+function App:handle_aux_grid_event(x, y, z)
+  if not self.aux_grid_dev or z ~= 1 then return end
+  if x < 1 or x > cfg.NUM_STEPS or y < 1 or y > cfg.AUX_GRID_ROWS then return end
+
+  local t = clamp(tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+  self.sel_track = t
+
+  local tr = self:ensure_track_state(t)
+  local tc = cfg.TRACK_CFG[t]
+
+  self:push_undo_state()
+
+  if tc.type == "drum" then
+    tr.gates[x] = true
+    tr.vels[x] = self:aux_row_to_vel_level(y)
+  elseif tc.type == "poly" then
+    tr.pitches[x] = self:poly_toggle_aux_degree(t, self:poly_active_pitches(tr, x), self:aux_row_to_degree(y))
+    tr.gates[x] = (#tr.pitches[x] > 0)
+    if tr.gates[x] then
+      tr.vels[x] = clamp(tonumber(tr.vels[x]) or cfg.DEFAULT_VEL_LEVEL, 1, 15)
+    end
+  else
+    tr.gates[x] = true
+    tr.vels[x] = clamp(tonumber(tr.vels[x]) or cfg.DEFAULT_VEL_LEVEL, 1, 15)
+    tr.pitches[x] = self:aux_row_to_degree(y)
+  end
+
+  self:request_redraw()
+end
+
+function App:handle_main_grid_event(x, y, z)
   if self.takeover_mode then
     if y == cfg.MOD_ROW then
       self:handle_mod_row(x, z)
@@ -2341,6 +2628,10 @@ function App:grid_event(x, y, z)
   end
 end
 
+function App:grid_event(x, y, z)
+  self:handle_main_grid_event(x, y, z)
+end
+
 function App:handle_midi_message(data)
   local msg = midi.to_msg(data)
   local t = msg and msg.type
@@ -2481,10 +2772,26 @@ function App:enc(n, d)
 end
 
 function App:init()
-  self.grid_dev = grid.connect()
-  if self.grid_dev then
-    self.grid_dev.key = function(x, y, z)
-      self:grid_event(x, y, z)
+  for port = 1, 4 do
+    self:attach_grid_port(port)
+  end
+  self:refresh_grid_assignments()
+
+  if grid then
+    grid.add = function(new_grid)
+      if new_grid and new_grid.port then
+        self:attach_grid_port(new_grid.port)
+        self:refresh_grid_assignments()
+        self:request_redraw()
+      end
+    end
+
+    grid.remove = function(old_grid)
+      if old_grid and old_grid.port then
+        self.grid_ports[old_grid.port] = nil
+        self:refresh_grid_assignments()
+        self:request_redraw()
+      end
     end
   end
 
