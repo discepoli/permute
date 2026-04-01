@@ -43,6 +43,31 @@ local SCALE_DEGREE_INDICES = {
   lightbath = { 1, 2, 3, 4 }
 }
 
+local ARC_VARIANCE_MODES = {
+  "triangle",
+  "ramp down",
+  "ramp up",
+  "random",
+  "cadence 1",
+  "cadence 2",
+  "cadence 3",
+  "cadence 4"
+}
+
+local ARC_CADENCE_SHAPES = {
+  { -1, -0.33, 0.33, 1 },
+  { -1, -0.66, -0.33, 1 },
+  { -0.66, 0.33, 0.66, -1, -0.66, 0.33 },
+  { -0.33, 0.33, 0.33, -1, -0.66, -0.33 }
+}
+
+local ARC_DELTA_THRESHOLDS = {
+  [1] = 8,
+  [2] = 12,
+  [3] = 2,
+  [4] = 16
+}
+
 function App.new()
   local self = setmetatable({}, App)
 
@@ -83,7 +108,7 @@ function App.new()
   self.mod_held = {}
   self.mod_last_tap_time = {}
   self.mod_shortcut_consumed = {}
-  self.sel_track = nil
+  self.sel_track = 1
   self.temp_steps = {}
   self.temp_latched = false
   self.fill_latched = false
@@ -129,6 +154,10 @@ function App.new()
   self.grid_dirty = true
   self.grid_timer = nil
   self.internal_clock_id = nil
+  self.arc_dev = nil
+  self.arc_delta_accum = { 0, 0, 0, 0 }
+  self.arc_delta_thresholds = deep_copy_table(ARC_DELTA_THRESHOLDS)
+  self.arc_last_history_at = 0
 
   self.grid_dev = nil
   self.main_grid_dev = nil
@@ -155,7 +184,13 @@ function App.new()
       solo = false,
       start_step = 1,
       end_step = cfg.NUM_STEPS,
-      octave = 0
+      octave = 0,
+      arc = {
+        pulses = 0,
+        rotation = 1,
+        variance = 0,
+        mode = 1
+      }
     }
     for s = 1, cfg.NUM_STEPS do
       self.tracks[t].gates[s] = false
@@ -219,7 +254,11 @@ function App:default_setup_param_ids()
     "permute_crow_track_1",
     "permute_crow_track_2",
     "permute_redraw_fps",
-    "permute_beat_repeat_mode"
+    "permute_beat_repeat_mode",
+    "permute_arc_k1_threshold",
+    "permute_arc_k2_threshold",
+    "permute_arc_k3_threshold",
+    "permute_arc_k4_threshold"
   }
 
   for t = 1, cfg.NUM_TRACKS do
@@ -659,6 +698,216 @@ function App:get_track_bounds(tr)
   local lo = reverse and tr.end_step or tr.start_step
   local hi = reverse and tr.start_step or tr.end_step
   return lo, hi, reverse
+end
+
+function App:get_track_step_order(tr)
+  local lo, hi, reverse = self:get_track_bounds(tr)
+  local steps = {}
+  if reverse then
+    for s = hi, lo, -1 do
+      steps[#steps + 1] = s
+    end
+  else
+    for s = lo, hi do
+      steps[#steps + 1] = s
+    end
+  end
+  return steps
+end
+
+function App:normalize_arc_mode(mode)
+  return clamp(tonumber(mode) or 1, 1, #ARC_VARIANCE_MODES)
+end
+
+function App:get_arc_mode_name(mode)
+  return ARC_VARIANCE_MODES[self:normalize_arc_mode(mode)]
+end
+
+function App:get_arc_state(track)
+  local tr = self:ensure_track_state(track)
+  if not tr then return nil end
+  if type(tr.arc) ~= "table" then tr.arc = {} end
+  tr.arc.pulses = clamp(tonumber(tr.arc.pulses) or 0, 0, cfg.NUM_STEPS)
+  tr.arc.rotation = math.floor(tonumber(tr.arc.rotation) or 1)
+  tr.arc.variance = clamp(tonumber(tr.arc.variance) or 0, 0, 100)
+  tr.arc.mode = self:normalize_arc_mode(tr.arc.mode)
+  return tr.arc
+end
+
+function App:wrap_arc_index(v, len)
+  if len <= 0 then return 1 end
+  local idx = v % len
+  if idx < 0 then idx = idx + len end
+  return idx + 1
+end
+
+function App:is_beat_column(step)
+  return step == 1 or step == 5 or step == 9 or step == 13
+end
+
+function App:get_arc_pattern(track)
+  local tr = self:ensure_track_state(track)
+  local arc_state = self:get_arc_state(track)
+  if not tr or not arc_state then return {}, {}, {} end
+
+  local order = self:get_track_step_order(tr)
+  local len = #order
+  local active = {}
+  local positions = {}
+  if len == 0 then return order, active, positions end
+
+  local pulses = clamp(arc_state.pulses or 0, 0, len)
+  if pulses <= 0 then
+    for idx, step in ipairs(order) do positions[step] = idx end
+    return order, active, positions
+  end
+
+  local base = {}
+  for idx = 1, len do
+    local prev = math.floor((((idx - 1) * pulses) - 1) / len)
+    local curr = math.floor(((idx * pulses) - 1) / len)
+    base[idx] = (curr > prev)
+  end
+
+  local rotation = (arc_state.rotation or 1) - 1
+  for idx, step in ipairs(order) do
+    local src_idx = self:wrap_arc_index((idx - 1) - rotation, len)
+    positions[step] = idx
+    if base[src_idx] then active[step] = true end
+  end
+
+  return order, active, positions
+end
+
+function App:get_arc_random_value(track, pos)
+  local x = math.sin((track * 131) + (pos * 17.17)) * 43758.5453
+  return (x - math.floor(x)) * 2 - 1
+end
+
+function App:sample_arc_shape(shape, pos, len)
+  if type(shape) ~= "table" or #shape == 0 then return 0 end
+  if #shape == 1 or len <= 1 then return clamp(tonumber(shape[1]) or 0, -1, 1) end
+
+  local t = (pos - 1) / math.max(1, len - 1)
+  local scaled = t * (#shape - 1)
+  local idx = math.floor(scaled) + 1
+  local frac = scaled - math.floor(scaled)
+  local a = clamp(tonumber(shape[idx]) or 0, -1, 1)
+  local b = clamp(tonumber(shape[math.min(#shape, idx + 1)]) or a, -1, 1)
+  return a + ((b - a) * frac)
+end
+
+function App:get_arc_wave_value(track, pos, len, mode)
+  if len <= 1 then return 0 end
+
+  local name = self:get_arc_mode_name(mode)
+  local t = (pos - 1) / math.max(1, len - 1)
+
+  if name == "triangle" then
+    return 1 - (math.abs((t * 2) - 1) * 2)
+  elseif name == "ramp down" then
+    return 1 - (t * 2)
+  elseif name == "ramp up" then
+    return (t * 2) - 1
+  elseif name == "random" then
+    return self:get_arc_random_value(track, pos)
+  elseif name == "cadence 1" then
+    return self:sample_arc_shape(ARC_CADENCE_SHAPES[1], pos, len)
+  elseif name == "cadence 2" then
+    return self:sample_arc_shape(ARC_CADENCE_SHAPES[2], pos, len)
+  elseif name == "cadence 3" then
+    return self:sample_arc_shape(ARC_CADENCE_SHAPES[3], pos, len)
+  elseif name == "cadence 4" then
+    return self:sample_arc_shape(ARC_CADENCE_SHAPES[4], pos, len)
+  end
+
+  return 0
+end
+
+function App:get_arc_reference_step(track, order, step)
+  local tr = self:ensure_track_state(track)
+  if not tr then return nil end
+
+  local index_of = {}
+  for idx, ordered_step in ipairs(order) do
+    index_of[ordered_step] = idx
+  end
+
+  local target_idx = index_of[step] or 1
+  local len = #order
+  for distance = 0, len - 1 do
+    local left = target_idx - distance
+    if left >= 1 then
+      local candidate = order[left]
+      if tr.gates[candidate] then return candidate end
+    end
+
+    if distance > 0 then
+      local right = target_idx + distance
+      if right <= len then
+        local candidate = order[right]
+        if tr.gates[candidate] then return candidate end
+      end
+    end
+  end
+
+  return nil
+end
+
+function App:get_arc_step_data(track, step)
+  local tr = self:ensure_track_state(track)
+  local tc = self.track_cfg[track]
+  if not tr or not tc then return nil end
+  if tr.gates[step] then
+    return {
+      source = "manual",
+      vel = tr.vels[step],
+      pitch = tr.pitches[step]
+    }
+  end
+
+  local order, active, positions = self:get_arc_pattern(track)
+  if not active[step] then return nil end
+
+  local pos = positions[step] or 1
+  local len = #order
+  local arc_state = self:get_arc_state(track)
+  local variance_amount = clamp(tonumber(arc_state.variance) or 0, 0, 100)
+  local variance_depth = math.floor((variance_amount / 100) * 7 + 0.5)
+  local wave = self:get_arc_wave_value(track, pos, len, arc_state.mode)
+  local shift = math.floor((wave * variance_depth) + ((wave >= 0) and 0.5 or -0.5))
+  local ref_step = self:get_arc_reference_step(track, order, step)
+
+  if tc.type == "drum" then
+    local base_vel = ref_step and tr.vels[ref_step] or cfg.DEFAULT_VEL_LEVEL
+    return {
+      source = "arc",
+      vel = clamp(base_vel + shift, 1, 15)
+    }
+  elseif tc.type == "poly" then
+    local base_pitch = ref_step and tr.pitches[ref_step] or { 1 }
+    local chord = {}
+    if type(base_pitch) == "table" then
+      for i, degree in ipairs(base_pitch) do
+        chord[i] = clamp((tonumber(degree) or 1) + shift, 1, 16)
+      end
+    else
+      chord[1] = clamp((tonumber(base_pitch) or 1) + shift, 1, 16)
+    end
+    if #chord == 0 then chord[1] = 1 end
+    return {
+      source = "arc",
+      vel = ref_step and tr.vels[ref_step] or cfg.DEFAULT_VEL_LEVEL,
+      pitch = chord
+    }
+  end
+
+  local base_degree = ref_step and tr.pitches[ref_step] or 1
+  return {
+    source = "arc",
+    vel = ref_step and tr.vels[ref_step] or cfg.DEFAULT_VEL_LEVEL,
+    pitch = clamp((tonumber(base_degree) or 1) + shift, 1, 16)
+  }
 end
 
 function App:mod_name(id)
@@ -1345,6 +1594,11 @@ function App:ensure_track_state(t)
   if not tr.gates then tr.gates = {} end
   if not tr.vels then tr.vels = {} end
   if not tr.pitches then tr.pitches = {} end
+  if type(tr.arc) ~= "table" then tr.arc = {} end
+  tr.arc.pulses = clamp(tonumber(tr.arc.pulses) or 0, 0, cfg.NUM_STEPS)
+  tr.arc.rotation = math.floor(tonumber(tr.arc.rotation) or 1)
+  tr.arc.variance = clamp(tonumber(tr.arc.variance) or 0, 0, 100)
+  tr.arc.mode = self:normalize_arc_mode(tr.arc.mode)
   if not self.spice[t] then self.spice[t] = {} end
   if not self.track_steps[t] then self.track_steps[t] = 1 end
   self.track_clock_mult[t] = clamp(tonumber(self.track_clock_mult[t]) or 1, 1, 8)
@@ -1545,7 +1799,8 @@ function App:play_tracks(pulse_scale)
       local st = self:get_track_step(t)
       local gate_ticks = clamp(tonumber(self.track_gate_ticks[t]) or ((tc.type == "drum") and self.drum_gate_clocks or self.melody_gate_clocks), 1, 24)
       local has_fill = self.fill_active and self.fill_patterns[t][st]
-      local should_play = tr.gates[st] or has_fill
+      local step_data = self:get_arc_step_data(t, st)
+      local should_play = step_data or has_fill
 
       if self.last_notes[t] then
         self:note_off_last_for_track(t)
@@ -1554,7 +1809,7 @@ function App:play_tracks(pulse_scale)
       if not tr.muted and should_play then
         local output_ports = self:capture_midi_ports()
         local vel
-        if has_fill and not tr.gates[st] then
+        if has_fill and not step_data then
           vel = self.fill_patterns[t][st].vel
           if tc.type == "drum" then
             local note = clamp(tc.note, 0, 127)
@@ -1570,7 +1825,7 @@ function App:play_tracks(pulse_scale)
             self.last_notes[t] = { note = note, ch = tc.ch, ports = output_ports }
           end
         else
-          vel = tr.vels[st]
+          vel = step_data.vel
           if tc.type == "drum" then
             local note = clamp(tc.note, 0, 127)
             self:midi_note_on(note, self:vel_to_midi(vel), tc.ch, output_ports)
@@ -1582,7 +1837,7 @@ function App:play_tracks(pulse_scale)
             local spice_offset = sp and sp.current or 0
             local notes = {}
             local chord = {}
-            for _, d in ipairs(tr.pitches[st]) do
+            for _, d in ipairs(step_data.pitch or {}) do
               chord[#chord + 1] = self:get_pitch(t, d, spice_offset)
             end
             for _, note in ipairs(chord) do
@@ -1597,7 +1852,7 @@ function App:play_tracks(pulse_scale)
           else
             local sp = self.spice[t] and self.spice[t][st]
             local spice_offset = sp and sp.current or 0
-            local note = self:get_pitch(t, tr.pitches[st], spice_offset)
+            local note = self:get_pitch(t, step_data.pitch, spice_offset)
             self:midi_note_on(note, self:vel_to_midi(vel), tc.ch, output_ports)
             self:trigger_crow(t, note)
             self:schedule_note_off(t, note, tc.ch, gate_ticks, output_ports)
@@ -1840,6 +2095,7 @@ function App:clear_track(t)
     self.tracks[t].vels[s] = cfg.DEFAULT_VEL_LEVEL
   end
   self.spice[t] = {}
+  self.tracks[t].arc = { pulses = 0, rotation = 1, variance = 0, mode = 1 }
 end
 
 function App:clear_all_tracks()
@@ -2021,12 +2277,20 @@ function App:draw_takeover()
     for s = 1, cfg.NUM_STEPS do
       local in_range = s >= lo and s <= hi
       local fill = fills[s]
-      if tr.gates[s] then
-        local v = tr.vels[s]
+      local step_data = self:get_arc_step_data(self.sel_track, s)
+      if in_range and self:is_beat_column(s) then
+        for row = 1, 15 do
+          self:grid_led(s, row, 2)
+        end
+      end
+      if step_data then
+        local v = step_data.vel
         for row = 1, 15 do
           local level_at_row = 16 - row
           if level_at_row <= v then
-            local lv = (s == current_step and self.playing) and 15 or 10
+            local manual = step_data.source == "manual"
+            local lv = manual and ((s == current_step and self.playing) and 15 or 10)
+              or ((s == current_step and self.playing) and 11 or 7)
             if not in_range then lv = math.floor(lv / 2) end
             self:grid_led(s, row, lv)
           end
@@ -2048,18 +2312,25 @@ function App:draw_takeover()
       local in_range = s >= lo and s <= hi
       local fill = fills[s]
       local fill_degree = fill and clamp(tonumber(fill.pitch) or 1, 1, 16) or nil
+      local step_data = self:get_arc_step_data(self.sel_track, s)
+      if in_range and self:is_beat_column(s) then
+        for row = 1, 15 do
+          self:grid_led(s, row, 2)
+        end
+      end
       for row = 1, 15 do
         local degree = 16 - row
         local is_root = ((degree - 1) % #scale) == 0
         local is_on = false
         local is_fill = false
-        if tr.gates[s] then
-          if tc.type == "poly" then is_on = self:poly_has_pitch(tr.pitches[s], degree) else is_on = tr.pitches[s] == degree end
+        if step_data then
+          if tc.type == "poly" then is_on = self:poly_has_pitch(step_data.pitch, degree) else is_on = step_data.pitch == degree end
         elseif fill_degree then
           is_fill = degree == fill_degree
         end
         if is_on then
-          local lv = is_playhead and 15 or 12
+          local manual = step_data.source == "manual"
+          local lv = manual and (is_playhead and 15 or 12) or (is_playhead and 11 or 7)
           if not in_range then lv = math.floor(lv / 2) end
           self:grid_led(s, row, lv)
         elseif is_fill then
@@ -2103,9 +2374,16 @@ function App:redraw_main_grid()
         local lv = 0
         local is_playhead = (s == track_playhead and self.playing)
         local in_range = in_range_fn(s)
+        local step_data = self:get_arc_step_data(t, s)
+        local has_manual = tr.gates[s]
+        local has_arc = step_data and step_data.source == "arc"
 
         if s == 1 or s == 5 or s == 9 or s == 13 then lv = 2 end
-        if tr.gates[s] then lv = 10 end
+        if has_manual then
+          lv = 10
+        elseif has_arc then
+          lv = 6
+        end
         if self.fill_patterns[t][s] then lv = math.max(lv, 5) end
         if tr.muted then lv = math.floor(lv / 3) end
 
@@ -2154,12 +2432,19 @@ function App:redraw_aux_grid()
       local in_range = s >= lo and s <= hi
       local is_playhead = (s == current_step and self.playing)
       local fill = fills[s]
+      local step_data = self:get_arc_step_data(t, s)
       local top_row = nil
       local lv = 0
 
-      if tr.gates[s] then
-        top_row = self:vel_level_to_aux_row(tr.vels[s])
-        lv = is_playhead and 15 or 12
+      if in_range and self:is_beat_column(s) then
+        for row = 1, cfg.AUX_GRID_ROWS do
+          self:grid_led(dev, s, row, 2)
+        end
+      end
+
+      if step_data then
+        top_row = self:vel_level_to_aux_row(step_data.vel)
+        lv = (step_data.source == "manual") and (is_playhead and 15 or 12) or (is_playhead and 10 or 7)
       elseif fill then
         top_row = self:vel_level_to_aux_row(fill.vel)
         lv = is_playhead and 10 or 6
@@ -2181,6 +2466,13 @@ function App:redraw_aux_grid()
       local fill = fills[s]
       local fill_degree = fill and self:get_closest_aux_degree(t, fill.pitch) or nil
       local fill_above = fill and self:is_aux_degree_above_visible_octave(t, fill.pitch) or false
+      local step_data = self:get_arc_step_data(t, s)
+
+      if in_range and self:is_beat_column(s) then
+        for row = 1, cfg.AUX_GRID_ROWS do
+          self:grid_led(dev, s, row, 2)
+        end
+      end
 
       for degree = 1, cfg.AUX_GRID_ROWS do
         local row = self:degree_to_aux_row(degree)
@@ -2189,9 +2481,9 @@ function App:redraw_aux_grid()
         local is_fill = false
         local is_above = false
 
-        if tr.gates[s] then
+        if step_data then
           if tc.type == "poly" then
-            for _, stored_degree in ipairs(tr.pitches[s]) do
+            for _, stored_degree in ipairs(step_data.pitch or {}) do
               if self:get_closest_aux_degree(t, stored_degree) == degree then
                 is_on = true
                 is_above = self:is_aux_degree_above_visible_octave(t, stored_degree)
@@ -2199,9 +2491,9 @@ function App:redraw_aux_grid()
               end
             end
           else
-            is_on = self:get_closest_aux_degree(t, tr.pitches[s]) == degree
+            is_on = self:get_closest_aux_degree(t, step_data.pitch) == degree
             if is_on then
-              is_above = self:is_aux_degree_above_visible_octave(t, tr.pitches[s])
+              is_above = self:is_aux_degree_above_visible_octave(t, step_data.pitch)
             end
           end
         elseif fill_degree then
@@ -2210,7 +2502,10 @@ function App:redraw_aux_grid()
         end
 
         if is_on then
-          local lv = is_above and ((is_playhead and 7) or 5) or ((is_playhead and 15) or 12)
+          local manual = step_data.source == "manual"
+          local lv = is_above
+            and (manual and ((is_playhead and 7) or 5) or ((is_playhead and 5) or 4))
+            or (manual and ((is_playhead and 15) or 12) or ((is_playhead and 10) or 7))
           if not in_range then lv = math.max(1, math.floor(lv / 2)) end
           self:grid_led(dev, s, row, lv)
         elseif is_fill then
@@ -2245,6 +2540,162 @@ function App:redraw_grid(force)
   self.redraw_deferred = false
 end
 
+
+function App:get_arc_led_index(pos, len)
+  if len <= 0 then return 1 end
+  return clamp(math.floor(((pos - 1) * 64) / len) + 1, 1, 64)
+end
+
+function App:redraw_arc()
+  local dev = self.arc_dev
+  if not dev then return end
+
+  dev:all(0)
+
+  if not self.sel_track then
+    dev:refresh()
+    return
+  end
+
+  local t = clamp(tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+  local tr = self:ensure_track_state(t)
+  local arc_state = self:get_arc_state(t)
+  local order, active = self:get_arc_pattern(t)
+  local len = #order
+
+  if len > 0 then
+    for idx, step in ipairs(order) do
+      local led = self:get_arc_led_index(idx, len)
+      dev:led(1, led, active[step] and 12 or 3)
+      dev:led(2, led, 3)
+    end
+
+    local rotation_led = self:get_arc_led_index(self:wrap_arc_index((arc_state.rotation or 1) - 1, len), len)
+    dev:led(2, rotation_led, 15)
+  end
+
+  local variance_fill = clamp(math.floor(((arc_state.variance or 0) / 100) * 64 + 0.5), 0, 64)
+  for led = 1, 64 do
+    dev:led(3, led, led <= variance_fill and 12 or 2)
+  end
+
+  local modes = #ARC_VARIANCE_MODES
+  for idx = 1, modes do
+    local start_led = math.floor(((idx - 1) * 64) / modes) + 1
+    local end_led = math.floor((idx * 64) / modes)
+    local level = (idx == arc_state.mode) and 12 or 3
+    for led = start_led, end_led do
+      dev:led(4, led, level)
+    end
+  end
+
+  dev:refresh()
+end
+
+function App:begin_arc_history_snapshot()
+  local now = now_ms()
+  if now - (self.arc_last_history_at or 0) > 0.25 * 1000 then
+    self:push_undo_state()
+    self.arc_last_history_at = now
+  end
+end
+
+function App:consume_arc_delta(knob, delta, threshold)
+  local accum = (self.arc_delta_accum[knob] or 0) + delta
+  local steps = 0
+
+  while math.abs(accum) >= threshold do
+    if accum > 0 then
+      steps = steps + 1
+      accum = accum - threshold
+    else
+      steps = steps - 1
+      accum = accum + threshold
+    end
+  end
+
+  self.arc_delta_accum[knob] = accum
+  return steps
+end
+
+function App:handle_arc_delta(n, d)
+  if n < 1 or n > 4 or d == 0 then return end
+  if not self.sel_track then self.sel_track = 1 end
+
+  local t = clamp(tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+  local tr = self:ensure_track_state(t)
+  local arc_state = self:get_arc_state(t)
+  if not tr or not arc_state then return end
+
+  local span_len = #self:get_track_step_order(tr)
+  local changed = false
+  local label = nil
+  local value = nil
+
+  if n == 1 then
+    local steps = self:consume_arc_delta(n, d, self.arc_delta_thresholds[1] or ARC_DELTA_THRESHOLDS[1])
+    if steps ~= 0 then
+      self:begin_arc_history_snapshot()
+      local next_pulses = clamp((arc_state.pulses or 0) + steps, 0, span_len)
+      if next_pulses ~= arc_state.pulses then
+        arc_state.pulses = next_pulses
+        changed = true
+        label = "arc pulses"
+        value = tostring(next_pulses)
+      end
+    end
+  elseif n == 2 then
+    local steps = self:consume_arc_delta(n, d, self.arc_delta_thresholds[2] or ARC_DELTA_THRESHOLDS[2])
+    if steps ~= 0 then
+      self:begin_arc_history_snapshot()
+      arc_state.rotation = math.floor((arc_state.rotation or 1) + steps)
+      changed = true
+      label = "arc rotate"
+      value = tostring(self:wrap_arc_index((arc_state.rotation or 1) - 1, math.max(1, span_len)))
+    end
+  elseif n == 3 then
+    local steps = self:consume_arc_delta(n, d, self.arc_delta_thresholds[3] or ARC_DELTA_THRESHOLDS[3])
+    if steps ~= 0 then
+      self:begin_arc_history_snapshot()
+      local next_variance = clamp((arc_state.variance or 0) + steps, 0, 100)
+      if next_variance ~= arc_state.variance then
+        arc_state.variance = next_variance
+        changed = true
+        label = "arc variance"
+        value = tostring(next_variance) .. "%"
+      end
+    end
+  elseif n == 4 then
+    local steps = self:consume_arc_delta(n, d, self.arc_delta_thresholds[4] or ARC_DELTA_THRESHOLDS[4])
+    if steps ~= 0 then
+      self:begin_arc_history_snapshot()
+      local next_mode = clamp((arc_state.mode or 1) + steps, 1, #ARC_VARIANCE_MODES)
+      if next_mode ~= arc_state.mode then
+        arc_state.mode = next_mode
+        changed = true
+        label = "arc mode"
+        value = self:get_arc_mode_name(next_mode)
+      end
+    end
+  end
+
+  if changed then
+    if label and value then self:flash_status(label, value, 0.3) end
+    self:request_redraw()
+  end
+end
+
+function App:connect_arc()
+  if not arc or not arc.connect then return end
+  local dev = arc.connect()
+  if not dev then return end
+  self.arc_dev = dev
+  dev.delta = function(n, d)
+    self:handle_arc_delta(n, d)
+  end
+  self:redraw_arc()
+end
+
 function App:grid_led(a, b, c, d)
   local dev = self.main_grid_dev
   local x = a
@@ -2264,6 +2715,7 @@ end
 function App:request_redraw()
   self.screen_dirty = true
   self.grid_dirty = true
+  self:redraw_arc()
   if not self:is_menu_active() then
     redraw()
   end
@@ -2781,6 +3233,7 @@ function App:init()
     self:attach_grid_port(port)
   end
   self:refresh_grid_assignments()
+  self:connect_arc()
 
   if grid then
     grid.add = function(new_grid)
@@ -2797,6 +3250,17 @@ function App:init()
         self:refresh_grid_assignments()
         self:request_redraw()
       end
+    end
+  end
+
+  if arc then
+    arc.add = function()
+      self:connect_arc()
+      self:request_redraw()
+    end
+
+    arc.remove = function()
+      self.arc_dev = nil
     end
   end
 
@@ -2820,6 +3284,10 @@ end
 function App:cleanup()
   self:stop()
   if self.grid_timer then self.grid_timer:stop() end
+  if self.arc_dev then
+    self.arc_dev:all(0)
+    self.arc_dev:refresh()
+  end
 end
 
 return App
