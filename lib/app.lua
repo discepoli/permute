@@ -57,6 +57,7 @@ function App.new()
 
   self.melody_gate_clocks = 5
   self.drum_gate_clocks = 1
+  self.track_cfg = deep_copy_table(cfg.TRACK_CFG)
 
   self.tracks = {}
   self.step = 1
@@ -159,7 +160,7 @@ function App.new()
     for s = 1, cfg.NUM_STEPS do
       self.tracks[t].gates[s] = false
       self.tracks[t].vels[s] = cfg.DEFAULT_VEL_LEVEL
-      if cfg.TRACK_CFG[t].type == "poly" then
+      if self.track_cfg[t].type == "poly" then
         self.tracks[t].pitches[s] = { 1 }
       else
         self.tracks[t].pitches[s] = 1
@@ -173,7 +174,7 @@ function App.new()
     self.fill_patterns[t] = {}
     self.spice[t] = {}
     self.track_transpose[t] = 0
-    self.track_gate_ticks[t] = (cfg.TRACK_CFG[t].type == "drum") and self.drum_gate_clocks or self.melody_gate_clocks
+    self.track_gate_ticks[t] = (self.track_cfg[t].type == "drum") and self.drum_gate_clocks or self.melody_gate_clocks
   end
 
   return self
@@ -233,7 +234,7 @@ function App:default_setup_param_ids()
 end
 
 function App:export_track_cfg()
-  return deep_copy_table(cfg.TRACK_CFG)
+  return deep_copy_table(self.track_cfg)
 end
 
 function App:import_track_cfg(track_cfg, sync_params)
@@ -242,10 +243,10 @@ function App:import_track_cfg(track_cfg, sync_params)
   for t = 1, cfg.NUM_TRACKS do
     local src = track_cfg[t]
     if src then
-      if type(cfg.TRACK_CFG[t]) ~= "table" then cfg.TRACK_CFG[t] = {} end
-      cfg.TRACK_CFG[t].type = src.type or cfg.TRACK_CFG[t].type
-      cfg.TRACK_CFG[t].ch = clamp(tonumber(src.ch) or cfg.TRACK_CFG[t].ch or 1, 1, 16)
-      cfg.TRACK_CFG[t].note = clamp(tonumber(src.note) or cfg.TRACK_CFG[t].note or 60, 0, 127)
+      if type(self.track_cfg[t]) ~= "table" then self.track_cfg[t] = {} end
+      self.track_cfg[t].type = src.type or self.track_cfg[t].type
+      self.track_cfg[t].ch = clamp(tonumber(src.ch) or self.track_cfg[t].ch or 1, 1, 16)
+      self.track_cfg[t].note = clamp(tonumber(src.note) or self.track_cfg[t].note or 60, 0, 127)
     end
   end
 
@@ -253,7 +254,7 @@ function App:import_track_cfg(track_cfg, sync_params)
     local was_suspended = self.suspend_history
     self.suspend_history = true
     for t = 1, cfg.NUM_TRACKS do
-      local tc = cfg.TRACK_CFG[t]
+      local tc = self.track_cfg[t]
       if tc then
         local gid = "permute_track_" .. t
         local type_idx = (tc.type == "drum") and 1 or ((tc.type == "mono") and 2 or 3)
@@ -444,7 +445,11 @@ function App:load_factory_default_setup(show_feedback)
       pcall(function() params:set(id, val) end)
     end
   end
-  self:sync_track_cfg_from_params()
+  if type(self.factory_default_track_cfg) == "table" then
+    self:import_track_cfg(self.factory_default_track_cfg, true)
+  else
+    self:sync_track_cfg_from_params()
+  end
   self.suspend_history = was_suspended
   self:request_redraw()
 
@@ -540,7 +545,7 @@ function App:import_state(state)
     if not self.track_clock_phase[t] then self.track_clock_phase[t] = 0 end
     if not self.track_transpose[t] then self.track_transpose[t] = 0 end
     if not self.track_gate_ticks[t] then
-      self.track_gate_ticks[t] = (cfg.TRACK_CFG[t].type == "drum") and self.drum_gate_clocks or self.melody_gate_clocks
+      self.track_gate_ticks[t] = (self.track_cfg[t].type == "drum") and self.drum_gate_clocks or self.melody_gate_clocks
     end
     self.track_gate_ticks[t] = clamp(tonumber(self.track_gate_ticks[t]) or 1, 1, 24)
     if not self.fill_patterns[t] then self.fill_patterns[t] = {} end
@@ -1115,9 +1120,9 @@ function App:handle_dynamic_row(x, z)
       applied_value = tostring(self.spice_pending_amount)
     elseif self.held then
       local tr = self.tracks[self.held.t]
-      if cfg.TRACK_CFG[self.held.t].type == "drum" then
+      if self.track_cfg[self.held.t].type == "drum" then
         tr.vels[self.held.s] = x - 1
-      elseif cfg.TRACK_CFG[self.held.t].type == "poly" then
+      elseif self.track_cfg[self.held.t].type == "poly" then
         tr.pitches[self.held.s] = self:poly_toggle_pitch(self:poly_active_pitches(tr, self.held.s), x)
         tr.gates[self.held.s] = (#tr.pitches[self.held.s] > 0)
       else
@@ -1328,7 +1333,7 @@ end
 
 function App:ensure_track_state(t)
   local tr = self.tracks[t]
-  local tc = cfg.TRACK_CFG[t]
+  local tc = self.track_cfg[t]
   if not tr then return nil end
 
   tr.start_step = clamp(tonumber(tr.start_step) or 1, 1, cfg.NUM_STEPS)
@@ -1379,7 +1384,7 @@ function App:set_track_type(t, new_type)
   if not track or track < 1 or track > cfg.NUM_TRACKS then return end
   if new_type ~= "drum" and new_type ~= "mono" and new_type ~= "poly" then return end
 
-  local tc = cfg.TRACK_CFG[track]
+  local tc = self.track_cfg[track]
   if not tc or tc.type == new_type then return end
 
   self:push_undo_state()
@@ -1526,7 +1531,7 @@ function App:play_tracks(pulse_scale)
   local scale = tonumber(pulse_scale) or 1
   for t = 1, cfg.NUM_TRACKS do
     local tr = self:ensure_track_state(t)
-    local tc = cfg.TRACK_CFG[t]
+    local tc = self.track_cfg[t]
     local mult = self.track_clock_mult[t]
     local div = self.track_clock_div[t]
     local ratio = (mult / div) * scale
@@ -1707,7 +1712,7 @@ end
 
 function App:apply_random_notes(track, amount)
   local tr = self.tracks[track]
-  local tc = cfg.TRACK_CFG[track]
+  local tc = self.track_cfg[track]
   local is_drum = (tc.type == "drum")
   local center_degree = 1
   for s = 1, cfg.NUM_STEPS do
@@ -1740,7 +1745,7 @@ function App:apply_random_steps(track, density)
     local s = math.random(lo, hi)
     tr.gates[s] = true
     tr.vels[s] = cfg.DEFAULT_VEL_LEVEL
-    if cfg.TRACK_CFG[track].type == "poly" then
+    if self.track_cfg[track].type == "poly" then
       if type(tr.pitches[s]) ~= "table" or #tr.pitches[s] == 0 then tr.pitches[s] = { 1 } end
     elseif tr.pitches[s] == 0 then
       tr.pitches[s] = 1
@@ -1753,7 +1758,7 @@ function App:save_to_slot(slot)
   local snap = { g = {}, p = {} }
   for t = 1, cfg.NUM_TRACKS do
     local tr = self:ensure_track_state(t)
-    local tc = cfg.TRACK_CFG[t]
+    local tc = self.track_cfg[t]
     snap.g[t] = {}
     snap.p[t] = {}
     for s = 1, cfg.NUM_STEPS do
@@ -1777,7 +1782,7 @@ function App:load_from_slot(slot)
   if not snap then return end
   for t = 1, cfg.NUM_TRACKS do
     local tr = self:ensure_track_state(t)
-    local tc = cfg.TRACK_CFG[t]
+    local tc = self.track_cfg[t]
     for s = 1, cfg.NUM_STEPS do
       tr.gates[s] = false
       if tc.type == "poly" then tr.pitches[s] = { 1 } else tr.pitches[s] = 1 end
@@ -1807,7 +1812,7 @@ function App:clear_temp_steps()
     for s, _ in pairs(steps) do
       self.tracks[t].gates[s] = false
       self.tracks[t].vels[s] = cfg.DEFAULT_VEL_LEVEL
-      if cfg.TRACK_CFG[t].type == "poly" then self.tracks[t].pitches[s] = { 1 } else self.tracks[t].pitches[s] = 1 end
+      if self.track_cfg[t].type == "poly" then self.tracks[t].pitches[s] = { 1 } else self.tracks[t].pitches[s] = 1 end
     end
   end
   self.temp_steps = {}
@@ -1831,7 +1836,7 @@ end
 function App:clear_track(t)
   for s = 1, cfg.NUM_STEPS do
     self.tracks[t].gates[s] = false
-    if cfg.TRACK_CFG[t].type == "poly" then self.tracks[t].pitches[s] = { 1 } else self.tracks[t].pitches[s] = 1 end
+    if self.track_cfg[t].type == "poly" then self.tracks[t].pitches[s] = { 1 } else self.tracks[t].pitches[s] = 1 end
     self.tracks[t].vels[s] = cfg.DEFAULT_VEL_LEVEL
   end
   self.spice[t] = {}
@@ -1871,7 +1876,7 @@ end
 function App:draw_dynamic_row()
   if self.held and not self:any_mod_active() and not self.takeover_mode then
     local tr = self.tracks[self.held.t]
-    if cfg.TRACK_CFG[self.held.t].type == "drum" then
+    if self.track_cfg[self.held.t].type == "drum" then
       local v = tr.vels[self.held.s]
       for x = 1, 16 do self:grid_led(x, cfg.DYN_ROW, (x - 1) <= v and 10 or 2) end
     else
@@ -1880,7 +1885,7 @@ function App:draw_dynamic_row()
       for x = 1, 16 do
         local is_root = ((x - 1) % #scale) == 0
         local is_on = false
-        if cfg.TRACK_CFG[self.held.t].type == "poly" then is_on = self:poly_has_pitch(p, x) else is_on = (x == p) end
+        if self.track_cfg[self.held.t].type == "poly" then is_on = self:poly_has_pitch(p, x) else is_on = (x == p) end
         if is_on then self:grid_led(x, cfg.DYN_ROW, 15)
         elseif is_root then self:grid_led(x, cfg.DYN_ROW, 5)
         else self:grid_led(x, cfg.DYN_ROW, 2) end
@@ -2006,7 +2011,7 @@ end
 
 function App:draw_takeover()
   local tr = self:ensure_track_state(self.sel_track)
-  local tc = cfg.TRACK_CFG[self.sel_track]
+  local tc = self.track_cfg[self.sel_track]
   local fills = self.fill_patterns[self.sel_track] or {}
   local current_step = self:get_track_step(self.sel_track)
 
@@ -2138,7 +2143,7 @@ function App:redraw_aux_grid()
 
   local t = clamp(tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
   local tr = self:ensure_track_state(t)
-  local tc = cfg.TRACK_CFG[t]
+  local tc = self.track_cfg[t]
   local fills = self.fill_patterns[t] or {}
   local current_step = self:get_track_step(t)
   local lo, hi = self:get_track_bounds(tr)
@@ -2319,7 +2324,7 @@ function App:redraw_screen()
     local t = self.held.t
     local s = self.held.s
     local tr = self.tracks[t]
-    local tc = cfg.TRACK_CFG[t]
+    local tc = self.track_cfg[t]
     screen.level(15)
     screen.move(0, 12)
     screen.text("hold T" .. tostring(t) .. " S" .. tostring(s))
@@ -2382,7 +2387,7 @@ function App:handle_aux_grid_event(x, y, z)
   self.sel_track = t
 
   local tr = self:ensure_track_state(t)
-  local tc = cfg.TRACK_CFG[t]
+  local tc = self.track_cfg[t]
 
   self:push_undo_state()
 
@@ -2420,7 +2425,7 @@ function App:handle_main_grid_event(x, y, z)
       local t = self.sel_track or 1
       self.sel_track = t
       local tr = self.tracks[t]
-      local tc = cfg.TRACK_CFG[t]
+      local tc = self.track_cfg[t]
 
       if z == 1 then
         self:push_undo_state()
@@ -2596,7 +2601,7 @@ function App:handle_main_grid_event(x, y, z)
         if not self.tracks[t].gates[x] then
           self.tracks[t].gates[x] = true
           self.tracks[t].vels[x] = cfg.DEFAULT_VEL_LEVEL
-          if cfg.TRACK_CFG[t].type == "poly" and type(self.tracks[t].pitches[x]) ~= "table" then self.tracks[t].pitches[x] = { 1 } end
+          if self.track_cfg[t].type == "poly" and type(self.tracks[t].pitches[x]) ~= "table" then self.tracks[t].pitches[x] = { 1 } end
           self:add_temp_step(t, x)
         end
       elseif self.mod_held[cfg.MOD.SPICE] and not self.spice_pending_amount then
@@ -2609,7 +2614,7 @@ function App:handle_main_grid_event(x, y, z)
         if not self.tracks[t].gates[x] then
           self.tracks[t].gates[x] = true
           self.tracks[t].vels[x] = cfg.DEFAULT_VEL_LEVEL
-          if cfg.TRACK_CFG[t].type == "poly" and type(self.tracks[t].pitches[x]) ~= "table" then self.tracks[t].pitches[x] = { 1 } end
+          if self.track_cfg[t].type == "poly" and type(self.tracks[t].pitches[x]) ~= "table" then self.tracks[t].pitches[x] = { 1 } end
         end
       end
       if self:any_mod_active() then
@@ -2798,6 +2803,7 @@ function App:init()
   param_setup.setup(self)
   self:connect_midi_from_params()
   self.factory_default_setup_values = self:capture_default_setup_values()
+  self.factory_default_track_cfg = self:export_track_cfg()
   self:load_default_setup(false)
 
   self.grid_timer = metro.init(function()

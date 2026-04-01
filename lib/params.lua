@@ -139,7 +139,7 @@ function M.setup(app)
   params:set_action("permute_melody_gate_ticks", function(v)
     app.melody_gate_clocks = v
     for t = 1, cfg.NUM_TRACKS do
-      if cfg.TRACK_CFG[t].type ~= "drum" then
+      if app.track_cfg[t].type ~= "drum" then
         app.track_gate_ticks[t] = clamp(tonumber(v) or 1, 1, 24)
       end
     end
@@ -149,7 +149,7 @@ function M.setup(app)
   params:set_action("permute_drum_gate_ticks", function(v)
     app.drum_gate_clocks = v
     for t = 1, cfg.NUM_TRACKS do
-      if cfg.TRACK_CFG[t].type == "drum" then
+      if app.track_cfg[t].type == "drum" then
         app.track_gate_ticks[t] = clamp(tonumber(v) or 1, 1, 24)
       end
     end
@@ -228,10 +228,11 @@ function M.setup(app)
   end)
 
   for t = 1, cfg.NUM_TRACKS do
-    local tc = cfg.TRACK_CFG[t]
-    local gid = "permute_track_" .. t
+    local track = t
+    local tc = app.track_cfg[track]
+    local gid = "permute_track_" .. track
 
-    params:add_group(gid, "track " .. t .. " config", 4)
+    params:add_group(gid, "track " .. track .. " config", 4)
 
     local type_idx = 1
     for i, v in ipairs(TRACK_TYPES) do
@@ -243,27 +244,34 @@ function M.setup(app)
 
     params:add_option(gid .. "_type", "track type", TRACK_TYPES, type_idx)
     params:set_action(gid .. "_type", function(v)
-      local next_type = TRACK_TYPES[v] or tc.type
-      app:set_track_type(t, next_type)
+      local current_tc = app.track_cfg[track]
+      local next_type = TRACK_TYPES[v] or (current_tc and current_tc.type) or tc.type
+      app:set_track_type(track, next_type)
     end)
 
     params:add_number(gid .. "_ch", "midi channel", 1, 16, tc.ch)
     params:set_action(gid .. "_ch", function(v)
-      if app.push_undo_state and tc.ch ~= clamp(tonumber(v) or tc.ch, 1, 16) then app:push_undo_state() end
-      tc.ch = clamp(tonumber(v) or tc.ch, 1, 16)
+      local current_tc = app.track_cfg[track]
+      if not current_tc then return end
+      local next_ch = clamp(tonumber(v) or current_tc.ch, 1, 16)
+      if app.push_undo_state and current_tc.ch ~= next_ch then app:push_undo_state() end
+      current_tc.ch = next_ch
     end)
 
     params:add_number(gid .. "_note", "base note", 0, 127, tc.note)
     params:set_action(gid .. "_note", function(v)
-      if app.push_undo_state and tc.note ~= clamp(tonumber(v) or tc.note, 0, 127) then app:push_undo_state() end
-      tc.note = clamp(tonumber(v) or tc.note, 0, 127)
+      local current_tc = app.track_cfg[track]
+      if not current_tc then return end
+      local next_note = clamp(tonumber(v) or current_tc.note, 0, 127)
+      if app.push_undo_state and current_tc.note ~= next_note then app:push_undo_state() end
+      current_tc.note = next_note
     end)
 
-    params:add_number(gid .. "_len", "default note length", 1, 24, app.track_gate_ticks[t])
+    params:add_number(gid .. "_len", "default note length", 1, 24, app.track_gate_ticks[track])
     params:set_action(gid .. "_len", function(v)
-      local next_len = clamp(tonumber(v) or app.track_gate_ticks[t] or 1, 1, 24)
-      if app.push_undo_state and app.track_gate_ticks[t] ~= next_len then app:push_undo_state() end
-      app.track_gate_ticks[t] = next_len
+      local next_len = clamp(tonumber(v) or app.track_gate_ticks[track] or 1, 1, 24)
+      if app.push_undo_state and app.track_gate_ticks[track] ~= next_len then app:push_undo_state() end
+      app.track_gate_ticks[track] = next_len
     end)
   end
 
