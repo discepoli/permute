@@ -57,6 +57,7 @@ function App.new()
 
   self.melody_gate_clocks = 5
   self.drum_gate_clocks = 1
+  self.track_cfg = deep_copy_table(cfg.TRACK_CFG)
 
   self.tracks = {}
   self.step = 1
@@ -89,6 +90,7 @@ function App.new()
   self.mod_double_tap_ms = 250
   self.takeover_mode = false
   self.beat_repeat_len = 0
+  self.beat_repeat_mode = "full-row"
   self.beat_repeat_excluded = {}
   self.speed_mode = false
   self.save_slots = {}
@@ -129,7 +131,16 @@ function App.new()
   self.internal_clock_id = nil
 
   self.grid_dev = nil
+  self.main_grid_dev = nil
+  self.aux_grid_dev = nil
+  self.grid_ports = {}
+  self.main_grid_port = nil
+  self.aux_grid_port = nil
   self.midi_dev = nil
+  self.midi_devs = {}
+  self.midi_port_slots = { 1, 0, 0, 0 }
+  self.midi_out_ports = { 1 }
+  self.midi_active_ports = { [1] = true }
 
   self.crow_enabled = false
   self.crow_track_1 = 0
@@ -149,7 +160,7 @@ function App.new()
     for s = 1, cfg.NUM_STEPS do
       self.tracks[t].gates[s] = false
       self.tracks[t].vels[s] = cfg.DEFAULT_VEL_LEVEL
-      if cfg.TRACK_CFG[t].type == "poly" then
+      if self.track_cfg[t].type == "poly" then
         self.tracks[t].pitches[s] = { 1 }
       else
         self.tracks[t].pitches[s] = 1
@@ -163,7 +174,7 @@ function App.new()
     self.fill_patterns[t] = {}
     self.spice[t] = {}
     self.track_transpose[t] = 0
-    self.track_gate_ticks[t] = (cfg.TRACK_CFG[t].type == "drum") and self.drum_gate_clocks or self.melody_gate_clocks
+    self.track_gate_ticks[t] = (self.track_cfg[t].type == "drum") and self.drum_gate_clocks or self.melody_gate_clocks
   end
 
   return self
@@ -197,6 +208,9 @@ function App:default_setup_param_ids()
     "permute_send_clock_out",
     "permute_send_start_stop_out",
     "permute_midi_out",
+    "permute_midi_out_2",
+    "permute_midi_out_3",
+    "permute_midi_out_4",
     "permute_melody_gate_ticks",
     "permute_drum_gate_ticks",
     "permute_spice_accum_min",
@@ -204,7 +218,8 @@ function App:default_setup_param_ids()
     "permute_crow_enabled",
     "permute_crow_track_1",
     "permute_crow_track_2",
-    "permute_redraw_fps"
+    "permute_redraw_fps",
+    "permute_beat_repeat_mode"
   }
 
   for t = 1, cfg.NUM_TRACKS do
@@ -216,6 +231,117 @@ function App:default_setup_param_ids()
   end
 
   return ids
+end
+
+function App:export_track_cfg()
+  return deep_copy_table(self.track_cfg)
+end
+
+function App:import_track_cfg(track_cfg, sync_params)
+  if type(track_cfg) ~= "table" then return end
+
+  for t = 1, cfg.NUM_TRACKS do
+    local src = track_cfg[t]
+    if src then
+      if type(self.track_cfg[t]) ~= "table" then self.track_cfg[t] = {} end
+      self.track_cfg[t].type = src.type or self.track_cfg[t].type
+      self.track_cfg[t].ch = clamp(tonumber(src.ch) or self.track_cfg[t].ch or 1, 1, 16)
+      self.track_cfg[t].note = clamp(tonumber(src.note) or self.track_cfg[t].note or 60, 0, 127)
+    end
+  end
+
+  if sync_params and params and params.set then
+    local was_suspended = self.suspend_history
+    self.suspend_history = true
+    for t = 1, cfg.NUM_TRACKS do
+      local tc = self.track_cfg[t]
+      if tc then
+        local gid = "permute_track_" .. t
+        local type_idx = (tc.type == "drum") and 1 or ((tc.type == "mono") and 2 or 3)
+        pcall(function() params:set(gid .. "_type", type_idx) end)
+        pcall(function() params:set(gid .. "_ch", clamp(tonumber(tc.ch) or 1, 1, 16)) end)
+        pcall(function() params:set(gid .. "_note", clamp(tonumber(tc.note) or 60, 0, 127)) end)
+      end
+    end
+    self.suspend_history = was_suspended
+  end
+end
+
+function App:sync_track_cfg_from_params()
+  if not params or not params.get then return end
+
+  local track_cfg = {}
+  for t = 1, cfg.NUM_TRACKS do
+    local gid = "permute_track_" .. t
+    local type_idx = 1
+    local ok_type, loaded_type = pcall(function() return params:get(gid .. "_type") end)
+    if ok_type and loaded_type ~= nil then type_idx = tonumber(loaded_type) or 1 end
+    track_cfg[t] = {
+      type = (type_idx == 3 and "poly") or (type_idx == 2 and "mono") or "drum",
+      ch = clamp(tonumber(params:get(gid .. "_ch")) or 1, 1, 16),
+      note = clamp(tonumber(params:get(gid .. "_note")) or 60, 0, 127)
+    }
+  end
+
+  self:import_track_cfg(track_cfg, false)
+end
+
+function App:get_selected_midi_ports()
+  local ports = {}
+  local seen = {}
+  for _, port in ipairs(self.midi_port_slots or {}) do
+    local midi_port = clamp(tonumber(port) or 0, 0, 16)
+    if midi_port > 0 and not seen[midi_port] then
+      ports[#ports + 1] = midi_port
+      seen[midi_port] = true
+    end
+  end
+  return ports
+end
+
+function App:capture_midi_ports(ports)
+  if type(ports) == "table" then return deep_copy_table(ports) end
+  return self:get_selected_midi_ports()
+end
+
+function App:get_beat_repeat_length_for_column(x)
+  if self.beat_repeat_mode == "one-handed" then
+    local map = {
+      [13] = 1,
+      [14] = 2,
+      [15] = 4,
+      [16] = 8
+    }
+    return map[x]
+  end
+  if x >= 1 and x <= 16 then return x end
+  return nil
+end
+
+function App:get_beat_repeat_column_for_length(len)
+  local rpt_len = tonumber(len) or 0
+  if self.beat_repeat_mode == "one-handed" then
+    local map = {
+      [1] = 13,
+      [2] = 14,
+      [4] = 15,
+      [8] = 16
+    }
+    return map[rpt_len]
+  end
+  if rpt_len >= 1 and rpt_len <= 16 then return rpt_len end
+  return nil
+end
+
+function App:for_each_midi_device(ports, fn)
+  local selected_ports = self:capture_midi_ports(ports)
+  for _, port in ipairs(selected_ports) do
+    local dev = self.midi_devs[port]
+    if dev then
+      fn(dev, port)
+    end
+  end
+  return selected_ports
 end
 
 function App:set_spice_accum_bounds(min_v, max_v)
@@ -261,7 +387,10 @@ function App:save_default_setup(show_feedback)
 
   local values = self:capture_default_setup_values()
 
-  tab.save({ params = values }, self:default_setup_path())
+  tab.save({
+    params = values,
+    track_cfg = self:export_track_cfg()
+  }, self:default_setup_path())
   if show_feedback then self:flash_status("default", "saved") end
   return true
 end
@@ -289,6 +418,11 @@ function App:load_default_setup(show_feedback)
       pcall(function() params:set(id, val) end)
     end
   end
+  if type(loaded.track_cfg) == "table" then
+    self:import_track_cfg(loaded.track_cfg, true)
+  else
+    self:sync_track_cfg_from_params()
+  end
   self.suspend_history = was_suspended
   self:request_redraw()
 
@@ -310,6 +444,11 @@ function App:load_factory_default_setup(show_feedback)
     if val ~= nil then
       pcall(function() params:set(id, val) end)
     end
+  end
+  if type(self.factory_default_track_cfg) == "table" then
+    self:import_track_cfg(self.factory_default_track_cfg, true)
+  else
+    self:sync_track_cfg_from_params()
   end
   self.suspend_history = was_suspended
   self:request_redraw()
@@ -337,6 +476,7 @@ function App:export_state()
     spice = deep_copy_table(self.spice),
     save_slots = deep_copy_table(self.save_slots),
     beat_repeat_len = self.beat_repeat_len,
+    beat_repeat_mode = self.beat_repeat_mode,
     beat_repeat_excluded = deep_copy_table(self.beat_repeat_excluded),
     master_seq_len_enabled = self.master_seq_len_enabled,
     master_seq_len = self.master_seq_len,
@@ -348,6 +488,7 @@ function App:export_state()
     key_root = self.key_root,
     key_transpose = self.key_transpose,
     scale_degree = self.scale_degree,
+    track_cfg = self:export_track_cfg(),
     sel_track = self.sel_track,
     step = self.step
   }
@@ -355,6 +496,10 @@ end
 
 function App:import_state(state)
   if type(state) ~= "table" then return end
+
+  if type(state.track_cfg) == "table" then
+    self:import_track_cfg(state.track_cfg, false)
+  end
 
   if type(state.tracks) == "table" then self.tracks = deep_copy_table(state.tracks) end
   if type(state.track_steps) == "table" then self.track_steps = deep_copy_table(state.track_steps) end
@@ -368,6 +513,7 @@ function App:import_state(state)
   if type(state.beat_repeat_excluded) == "table" then self.beat_repeat_excluded = deep_copy_table(state.beat_repeat_excluded) end
 
   self.beat_repeat_len = tonumber(state.beat_repeat_len) or 0
+  self.beat_repeat_mode = state.beat_repeat_mode or self.beat_repeat_mode
   self.master_seq_len_enabled = not not state.master_seq_len_enabled
   self.master_seq_len = clamp(tonumber(state.master_seq_len) or cfg.DEFAULT_MASTER_SEQ_LEN, 1, cfg.MAX_MASTER_SEQ_LEN)
   if state.send_midi_clock_out ~= nil then self.send_midi_clock_out = not not state.send_midi_clock_out end
@@ -399,7 +545,7 @@ function App:import_state(state)
     if not self.track_clock_phase[t] then self.track_clock_phase[t] = 0 end
     if not self.track_transpose[t] then self.track_transpose[t] = 0 end
     if not self.track_gate_ticks[t] then
-      self.track_gate_ticks[t] = (cfg.TRACK_CFG[t].type == "drum") and self.drum_gate_clocks or self.melody_gate_clocks
+      self.track_gate_ticks[t] = (self.track_cfg[t].type == "drum") and self.drum_gate_clocks or self.melody_gate_clocks
     end
     self.track_gate_ticks[t] = clamp(tonumber(self.track_gate_ticks[t]) or 1, 1, 24)
     if not self.fill_patterns[t] then self.fill_patterns[t] = {} end
@@ -412,39 +558,14 @@ end
 
 function App:export_undo_state()
   return {
-    app_state = self:export_state(),
-    track_cfg = deep_copy_table(cfg.TRACK_CFG)
+    app_state = self:export_state()
   }
 end
 
 function App:import_undo_state(state)
   if type(state) ~= "table" then return end
-
-  if type(state.track_cfg) == "table" then
-    for t = 1, cfg.NUM_TRACKS do
-      local src = state.track_cfg[t]
-      if src then
-        if type(cfg.TRACK_CFG[t]) ~= "table" then cfg.TRACK_CFG[t] = {} end
-        cfg.TRACK_CFG[t].type = src.type or cfg.TRACK_CFG[t].type
-        cfg.TRACK_CFG[t].ch = clamp(tonumber(src.ch) or cfg.TRACK_CFG[t].ch or 1, 1, 16)
-        cfg.TRACK_CFG[t].note = clamp(tonumber(src.note) or cfg.TRACK_CFG[t].note or 60, 0, 127)
-      end
-    end
-    if params and params.set then
-      for t = 1, cfg.NUM_TRACKS do
-        local tc = cfg.TRACK_CFG[t]
-        if tc then
-          local gid = "permute_track_" .. t
-          local type_idx = (tc.type == "drum") and 1 or ((tc.type == "mono") and 2 or 3)
-          pcall(function() params:set(gid .. "_type", type_idx) end)
-          pcall(function() params:set(gid .. "_ch", clamp(tonumber(tc.ch) or 1, 1, 16)) end)
-          pcall(function() params:set(gid .. "_note", clamp(tonumber(tc.note) or 60, 0, 127)) end)
-        end
-      end
-    end
-  end
-
   self:import_state(state.app_state or state)
+  self:import_track_cfg((state.app_state or state).track_cfg, true)
 end
 
 function App:push_undo_state()
@@ -500,7 +621,16 @@ function App:load_preset(number)
   if not tab or not tab.load then return end
   local loaded = tab.load(self:preset_path(number))
   if type(loaded) == "table" then
+    self:stop_all_notes()
+    local was_suspended = self.suspend_history
+    self.suspend_history = true
     self:import_state(loaded)
+    if type(loaded.track_cfg) == "table" then
+      self:import_track_cfg(loaded.track_cfg, true)
+    else
+      self:sync_track_cfg_from_params()
+    end
+    self.suspend_history = was_suspended
   end
 end
 
@@ -963,8 +1093,11 @@ function App:handle_dynamic_row(x, z)
       self.rand_steps_shuffled = true
       applied_value = tostring(x)
     elseif self.mod_held[cfg.MOD.BEAT_RPT] then
-      self.beat_repeat_len = (self.beat_repeat_len == x) and 0 or x
-      applied_value = tostring(self.beat_repeat_len)
+      local next_len = self:get_beat_repeat_length_for_column(x)
+      if next_len then
+        self.beat_repeat_len = (self.beat_repeat_len == next_len) and 0 or next_len
+        applied_value = tostring(self.beat_repeat_len)
+      end
     elseif self.speed_mode then
       if self.sel_track then
         local center = 8
@@ -987,9 +1120,9 @@ function App:handle_dynamic_row(x, z)
       applied_value = tostring(self.spice_pending_amount)
     elseif self.held then
       local tr = self.tracks[self.held.t]
-      if cfg.TRACK_CFG[self.held.t].type == "drum" then
+      if self.track_cfg[self.held.t].type == "drum" then
         tr.vels[self.held.s] = x - 1
-      elseif cfg.TRACK_CFG[self.held.t].type == "poly" then
+      elseif self.track_cfg[self.held.t].type == "poly" then
         tr.pitches[self.held.s] = self:poly_toggle_pitch(self:poly_active_pitches(tr, self.held.s), x)
         tr.gates[self.held.s] = (#tr.pitches[self.held.s] > 0)
       else
@@ -1018,6 +1151,121 @@ function App:vel_to_midi(level)
   return clamp(level * 8 + 1, 1, 127)
 end
 
+function App:is_aux_grid_device(dev)
+  local device = dev and dev.device
+  return device
+    and device.cols == cfg.AUX_GRID_COLS
+    and device.rows == cfg.AUX_GRID_ROWS
+end
+
+function App:attach_grid_port(port)
+  if not grid or not grid.connect then return nil end
+  local dev = grid.connect(port)
+  if dev then
+    dev.key = function(x, y, z)
+      self:handle_grid_key(port, x, y, z)
+    end
+  end
+  self.grid_ports[port] = dev
+  return dev
+end
+
+function App:get_connected_grid_devices()
+  local connected = {}
+  for _, dev in pairs(self.grid_ports or {}) do
+    if dev and dev.device then
+      connected[#connected + 1] = dev
+    end
+  end
+  table.sort(connected, function(a, b)
+    return (a.device.port or 0) < (b.device.port or 0)
+  end)
+  return connected
+end
+
+function App:refresh_grid_assignments()
+  local connected = self:get_connected_grid_devices()
+  local main = nil
+  local aux = nil
+
+  if #connected == 1 then
+    main = connected[1]
+  elseif #connected > 1 then
+    for _, dev in ipairs(connected) do
+      if not self:is_aux_grid_device(dev) then
+        main = dev
+        break
+      end
+    end
+
+    if not main then
+      main = connected[1]
+    end
+
+    for _, dev in ipairs(connected) do
+      if dev ~= main and self:is_aux_grid_device(dev) then
+        aux = dev
+        break
+      end
+    end
+  end
+
+  self.main_grid_dev = main
+  self.aux_grid_dev = aux
+  self.main_grid_port = main and main.device and main.device.port or nil
+  self.aux_grid_port = aux and aux.device and aux.device.port or nil
+  self.grid_dev = self.main_grid_dev
+end
+
+function App:handle_grid_key(port, x, y, z)
+  if port == self.aux_grid_port then
+    self:handle_aux_grid_event(x, y, z)
+    return
+  end
+  if port == self.main_grid_port then
+    self:handle_main_grid_event(x, y, z)
+  end
+end
+
+function App:aux_row_to_degree(y)
+  return clamp(cfg.AUX_GRID_ROWS - y + 1, 1, cfg.AUX_GRID_ROWS)
+end
+
+function App:degree_to_aux_row(degree)
+  local d = clamp(tonumber(degree) or 1, 1, cfg.AUX_GRID_ROWS)
+  return cfg.AUX_GRID_ROWS - d + 1
+end
+
+function App:aux_row_to_vel_level(y)
+  return clamp(17 - (y * 2), 1, 15)
+end
+
+function App:vel_level_to_aux_row(level)
+  local stored = clamp(tonumber(level) or cfg.DEFAULT_VEL_LEVEL, 1, 15)
+  return clamp(cfg.AUX_GRID_ROWS - math.floor((stored - 1) / 2), 1, cfg.AUX_GRID_ROWS)
+end
+
+function App:is_aux_degree_above_visible_octave(track, stored_degree)
+  return self:get_pitch(track, clamp(tonumber(stored_degree) or 1, 1, 16), 0)
+    > self:get_pitch(track, cfg.AUX_GRID_ROWS, 0)
+end
+
+function App:get_closest_aux_degree(track, stored_degree)
+  local target = self:get_pitch(track, clamp(tonumber(stored_degree) or 1, 1, 16), 0)
+  local best_degree = 1
+  local best_distance = nil
+
+  for degree = 1, cfg.AUX_GRID_ROWS do
+    local distance = math.abs(self:get_pitch(track, degree, 0) - target)
+    if best_distance == nil or distance < best_distance then
+      best_distance = distance
+      best_degree = degree
+    end
+  end
+
+  return best_degree
+end
+
 function App:poly_has_pitch(pv, degree)
   if type(pv) ~= "table" then return false end
   for _, d in ipairs(pv) do
@@ -1038,6 +1286,24 @@ function App:poly_toggle_pitch(pv, degree)
       end
     end
   end
+  if not found then out[#out + 1] = degree end
+  return out
+end
+
+function App:poly_toggle_aux_degree(track, pv, degree)
+  local out = {}
+  local found = false
+
+  if type(pv) == "table" then
+    for _, stored_degree in ipairs(pv) do
+      if self:get_closest_aux_degree(track, stored_degree) == degree then
+        found = true
+      else
+        out[#out + 1] = stored_degree
+      end
+    end
+  end
+
   if not found then out[#out + 1] = degree end
   return out
 end
@@ -1067,7 +1333,7 @@ end
 
 function App:ensure_track_state(t)
   local tr = self.tracks[t]
-  local tc = cfg.TRACK_CFG[t]
+  local tc = self.track_cfg[t]
   if not tr then return nil end
 
   tr.start_step = clamp(tonumber(tr.start_step) or 1, 1, cfg.NUM_STEPS)
@@ -1118,7 +1384,7 @@ function App:set_track_type(t, new_type)
   if not track or track < 1 or track > cfg.NUM_TRACKS then return end
   if new_type ~= "drum" and new_type ~= "mono" and new_type ~= "poly" then return end
 
-  local tc = cfg.TRACK_CFG[track]
+  local tc = self.track_cfg[track]
   if not tc or tc.type == new_type then return end
 
   self:push_undo_state()
@@ -1168,29 +1434,34 @@ function App:get_track_step(t)
   return lo + pos
 end
 
-function App:midi_note_on(note, vel, ch)
-  if not self.midi_dev then return end
-  self.midi_dev:note_on(note, vel, ch)
+function App:midi_note_on(note, vel, ch, ports)
+  self:for_each_midi_device(ports, function(dev)
+    dev:note_on(note, vel, ch)
+  end)
 end
 
-function App:midi_note_off(note, vel, ch)
-  if not self.midi_dev then return end
-  self.midi_dev:note_off(note, vel, ch)
+function App:midi_note_off(note, vel, ch, ports)
+  self:for_each_midi_device(ports, function(dev)
+    dev:note_off(note, vel, ch)
+  end)
 end
 
-function App:midi_realtime_clock()
-  if not self.midi_dev then return end
-  pcall(function() self.midi_dev:clock() end)
+function App:midi_realtime_clock(ports)
+  self:for_each_midi_device(ports, function(dev)
+    pcall(function() dev:clock() end)
+  end)
 end
 
-function App:midi_realtime_start()
-  if not self.midi_dev then return end
-  pcall(function() self.midi_dev:start() end)
+function App:midi_realtime_start(ports)
+  self:for_each_midi_device(ports, function(dev)
+    pcall(function() dev:start() end)
+  end)
 end
 
-function App:midi_realtime_stop()
-  if not self.midi_dev then return end
-  pcall(function() self.midi_dev:stop() end)
+function App:midi_realtime_stop(ports)
+  self:for_each_midi_device(ports, function(dev)
+    pcall(function() dev:stop() end)
+  end)
 end
 
 function App:trigger_crow(track, note)
@@ -1208,11 +1479,12 @@ function App:trigger_crow(track, note)
   if track == self.crow_track_2 then out(2) end
 end
 
-function App:schedule_note_off(track, note, ch, delay_ticks)
+function App:schedule_note_off(track, note, ch, delay_ticks, ports)
   self.active_note_offs[#self.active_note_offs + 1] = {
     track = track,
     note = note,
     ch = ch,
+    ports = self:capture_midi_ports(ports),
     off_tick = self.transport_clock + math.max(1, tonumber(delay_ticks) or 1)
   }
 end
@@ -1233,7 +1505,7 @@ function App:process_scheduled_note_offs()
   while i <= #self.active_note_offs do
     local ev = self.active_note_offs[i]
     if self.transport_clock >= ev.off_tick then
-      self:midi_note_off(ev.note, 0, ev.ch)
+      self:midi_note_off(ev.note, 0, ev.ch, ev.ports)
       table.remove(self.active_note_offs, i)
     else
       i = i + 1
@@ -1245,10 +1517,10 @@ function App:note_off_last_for_track(track)
   local prev = self.last_notes[track]
   if not prev then return end
   if prev.note then
-    self:midi_note_off(prev.note, 0, prev.ch)
+    self:midi_note_off(prev.note, 0, prev.ch, prev.ports)
   else
     for _, nd in ipairs(prev) do
-      self:midi_note_off(nd.note, 0, nd.ch)
+      self:midi_note_off(nd.note, 0, nd.ch, nd.ports)
     end
   end
   self.last_notes[track] = nil
@@ -1259,7 +1531,7 @@ function App:play_tracks(pulse_scale)
   local scale = tonumber(pulse_scale) or 1
   for t = 1, cfg.NUM_TRACKS do
     local tr = self:ensure_track_state(t)
-    local tc = cfg.TRACK_CFG[t]
+    local tc = self.track_cfg[t]
     local mult = self.track_clock_mult[t]
     local div = self.track_clock_div[t]
     local ratio = (mult / div) * scale
@@ -1280,30 +1552,31 @@ function App:play_tracks(pulse_scale)
       end
 
       if not tr.muted and should_play then
+        local output_ports = self:capture_midi_ports()
         local vel
         if has_fill and not tr.gates[st] then
           vel = self.fill_patterns[t][st].vel
           if tc.type == "drum" then
             local note = clamp(tc.note, 0, 127)
-            self:midi_note_on(note, self:vel_to_midi(vel), tc.ch)
+            self:midi_note_on(note, self:vel_to_midi(vel), tc.ch, output_ports)
             self:trigger_crow(t, note)
-            self:schedule_note_off(t, note, tc.ch, gate_ticks)
-            self.last_notes[t] = { note = note, ch = tc.ch }
+            self:schedule_note_off(t, note, tc.ch, gate_ticks, output_ports)
+            self.last_notes[t] = { note = note, ch = tc.ch, ports = output_ports }
           else
             local note = self:get_pitch(t, self.fill_patterns[t][st].pitch, 0)
-            self:midi_note_on(note, self:vel_to_midi(vel), tc.ch)
+            self:midi_note_on(note, self:vel_to_midi(vel), tc.ch, output_ports)
             self:trigger_crow(t, note)
-            self:schedule_note_off(t, note, tc.ch, gate_ticks)
-            self.last_notes[t] = { note = note, ch = tc.ch }
+            self:schedule_note_off(t, note, tc.ch, gate_ticks, output_ports)
+            self.last_notes[t] = { note = note, ch = tc.ch, ports = output_ports }
           end
         else
           vel = tr.vels[st]
           if tc.type == "drum" then
             local note = clamp(tc.note, 0, 127)
-            self:midi_note_on(note, self:vel_to_midi(vel), tc.ch)
+            self:midi_note_on(note, self:vel_to_midi(vel), tc.ch, output_ports)
             self:trigger_crow(t, note)
-            self:schedule_note_off(t, note, tc.ch, gate_ticks)
-            self.last_notes[t] = { note = note, ch = tc.ch }
+            self:schedule_note_off(t, note, tc.ch, gate_ticks, output_ports)
+            self.last_notes[t] = { note = note, ch = tc.ch, ports = output_ports }
           elseif tc.type == "poly" then
             local sp = self.spice[t] and self.spice[t][st]
             local spice_offset = sp and sp.current or 0
@@ -1313,10 +1586,10 @@ function App:play_tracks(pulse_scale)
               chord[#chord + 1] = self:get_pitch(t, d, spice_offset)
             end
             for _, note in ipairs(chord) do
-              self:midi_note_on(note, self:vel_to_midi(vel), tc.ch)
+              self:midi_note_on(note, self:vel_to_midi(vel), tc.ch, output_ports)
               self:trigger_crow(t, note)
-              self:schedule_note_off(t, note, tc.ch, gate_ticks)
-              notes[#notes + 1] = { note = note, ch = tc.ch }
+              self:schedule_note_off(t, note, tc.ch, gate_ticks, output_ports)
+              notes[#notes + 1] = { note = note, ch = tc.ch, ports = output_ports }
             end
             if #notes > 0 then
               self.last_notes[t] = notes
@@ -1325,10 +1598,10 @@ function App:play_tracks(pulse_scale)
             local sp = self.spice[t] and self.spice[t][st]
             local spice_offset = sp and sp.current or 0
             local note = self:get_pitch(t, tr.pitches[st], spice_offset)
-            self:midi_note_on(note, self:vel_to_midi(vel), tc.ch)
+            self:midi_note_on(note, self:vel_to_midi(vel), tc.ch, output_ports)
             self:trigger_crow(t, note)
-            self:schedule_note_off(t, note, tc.ch, gate_ticks)
-            self.last_notes[t] = { note = note, ch = tc.ch }
+            self:schedule_note_off(t, note, tc.ch, gate_ticks, output_ports)
+            self.last_notes[t] = { note = note, ch = tc.ch, ports = output_ports }
           end
         end
       end
@@ -1426,10 +1699,10 @@ end
 function App:stop_all_notes()
   for _, data in pairs(self.last_notes) do
     if data.note then
-      self:midi_note_off(data.note, 0, data.ch)
+      self:midi_note_off(data.note, 0, data.ch, data.ports)
     else
       for _, nd in ipairs(data) do
-        self:midi_note_off(nd.note, 0, nd.ch)
+        self:midi_note_off(nd.note, 0, nd.ch, nd.ports)
       end
     end
   end
@@ -1439,7 +1712,7 @@ end
 
 function App:apply_random_notes(track, amount)
   local tr = self.tracks[track]
-  local tc = cfg.TRACK_CFG[track]
+  local tc = self.track_cfg[track]
   local is_drum = (tc.type == "drum")
   local center_degree = 1
   for s = 1, cfg.NUM_STEPS do
@@ -1472,7 +1745,7 @@ function App:apply_random_steps(track, density)
     local s = math.random(lo, hi)
     tr.gates[s] = true
     tr.vels[s] = cfg.DEFAULT_VEL_LEVEL
-    if cfg.TRACK_CFG[track].type == "poly" then
+    if self.track_cfg[track].type == "poly" then
       if type(tr.pitches[s]) ~= "table" or #tr.pitches[s] == 0 then tr.pitches[s] = { 1 } end
     elseif tr.pitches[s] == 0 then
       tr.pitches[s] = 1
@@ -1485,7 +1758,7 @@ function App:save_to_slot(slot)
   local snap = { g = {}, p = {} }
   for t = 1, cfg.NUM_TRACKS do
     local tr = self:ensure_track_state(t)
-    local tc = cfg.TRACK_CFG[t]
+    local tc = self.track_cfg[t]
     snap.g[t] = {}
     snap.p[t] = {}
     for s = 1, cfg.NUM_STEPS do
@@ -1509,7 +1782,7 @@ function App:load_from_slot(slot)
   if not snap then return end
   for t = 1, cfg.NUM_TRACKS do
     local tr = self:ensure_track_state(t)
-    local tc = cfg.TRACK_CFG[t]
+    local tc = self.track_cfg[t]
     for s = 1, cfg.NUM_STEPS do
       tr.gates[s] = false
       if tc.type == "poly" then tr.pitches[s] = { 1 } else tr.pitches[s] = 1 end
@@ -1539,7 +1812,7 @@ function App:clear_temp_steps()
     for s, _ in pairs(steps) do
       self.tracks[t].gates[s] = false
       self.tracks[t].vels[s] = cfg.DEFAULT_VEL_LEVEL
-      if cfg.TRACK_CFG[t].type == "poly" then self.tracks[t].pitches[s] = { 1 } else self.tracks[t].pitches[s] = 1 end
+      if self.track_cfg[t].type == "poly" then self.tracks[t].pitches[s] = { 1 } else self.tracks[t].pitches[s] = 1 end
     end
   end
   self.temp_steps = {}
@@ -1563,7 +1836,7 @@ end
 function App:clear_track(t)
   for s = 1, cfg.NUM_STEPS do
     self.tracks[t].gates[s] = false
-    if cfg.TRACK_CFG[t].type == "poly" then self.tracks[t].pitches[s] = { 1 } else self.tracks[t].pitches[s] = 1 end
+    if self.track_cfg[t].type == "poly" then self.tracks[t].pitches[s] = { 1 } else self.tracks[t].pitches[s] = 1 end
     self.tracks[t].vels[s] = cfg.DEFAULT_VEL_LEVEL
   end
   self.spice[t] = {}
@@ -1603,7 +1876,7 @@ end
 function App:draw_dynamic_row()
   if self.held and not self:any_mod_active() and not self.takeover_mode then
     local tr = self.tracks[self.held.t]
-    if cfg.TRACK_CFG[self.held.t].type == "drum" then
+    if self.track_cfg[self.held.t].type == "drum" then
       local v = tr.vels[self.held.s]
       for x = 1, 16 do self:grid_led(x, cfg.DYN_ROW, (x - 1) <= v and 10 or 2) end
     else
@@ -1612,7 +1885,7 @@ function App:draw_dynamic_row()
       for x = 1, 16 do
         local is_root = ((x - 1) % #scale) == 0
         local is_on = false
-        if cfg.TRACK_CFG[self.held.t].type == "poly" then is_on = self:poly_has_pitch(p, x) else is_on = (x == p) end
+        if self.track_cfg[self.held.t].type == "poly" then is_on = self:poly_has_pitch(p, x) else is_on = (x == p) end
         if is_on then self:grid_led(x, cfg.DYN_ROW, 15)
         elseif is_root then self:grid_led(x, cfg.DYN_ROW, 5)
         else self:grid_led(x, cfg.DYN_ROW, 2) end
@@ -1654,7 +1927,14 @@ function App:draw_dynamic_row()
 
   if self.mod_held[cfg.MOD.BEAT_RPT] then
     local rpt_len = tonumber(self.beat_repeat_len) or 0
-    for x = 1, 16 do self:grid_led(x, cfg.DYN_ROW, x <= rpt_len and 10 or 2) end
+    if self.beat_repeat_mode == "one-handed" then
+      for x = 1, 16 do self:grid_led(x, cfg.DYN_ROW, 1) end
+      for _, col in ipairs({ 13, 14, 15, 16 }) do
+        self:grid_led(col, cfg.DYN_ROW, self:get_beat_repeat_column_for_length(rpt_len) == col and 10 or 3)
+      end
+    else
+      for x = 1, 16 do self:grid_led(x, cfg.DYN_ROW, x <= rpt_len and 10 or 2) end
+    end
     return
   end
 
@@ -1731,7 +2011,7 @@ end
 
 function App:draw_takeover()
   local tr = self:ensure_track_state(self.sel_track)
-  local tc = cfg.TRACK_CFG[self.sel_track]
+  local tc = self.track_cfg[self.sel_track]
   local fills = self.fill_patterns[self.sel_track] or {}
   local current_step = self:get_track_step(self.sel_track)
 
@@ -1798,17 +2078,11 @@ function App:draw_takeover()
   self:grid_led(cfg.MOD.TAKEOVER, cfg.MOD_ROW, 15)
 end
 
-function App:redraw_grid(force)
-  if not self.grid_dev then return end
-  if not force then
-    local now = now_ms()
-    if self.playing and self.use_midi_clock and (now - (self.last_redraw_time or 0) < self.redraw_min_ms) then
-      self.redraw_deferred = true
-      return
-    end
-  end
+function App:redraw_main_grid()
+  local dev = self.main_grid_dev
+  if not dev then return end
 
-  self.grid_dev:all(0)
+  dev:all(0)
   if self.takeover_mode and self.sel_track then
     self:draw_takeover()
     if self:is_modifier_dynamic_row_active() then
@@ -1846,20 +2120,145 @@ function App:redraw_grid(force)
           if in_range then lv = math.max(lv + 2, 6) else lv = math.max(lv, 3) end
         end
 
-        if lv > 0 then self.grid_dev:led(s, y, lv) end
+        if lv > 0 then dev:led(s, y, lv) end
       end
     end
     self:draw_dynamic_row()
     self:draw_mod_row()
   end
 
-  self.grid_dev:refresh()
+  dev:refresh()
+end
+
+function App:redraw_aux_grid()
+  local dev = self.aux_grid_dev
+  if not dev then return end
+
+  dev:all(0)
+
+  if not self.sel_track then
+    dev:refresh()
+    return
+  end
+
+  local t = clamp(tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+  local tr = self:ensure_track_state(t)
+  local tc = self.track_cfg[t]
+  local fills = self.fill_patterns[t] or {}
+  local current_step = self:get_track_step(t)
+  local lo, hi = self:get_track_bounds(tr)
+  local scale = cfg.SCALES[self.scale_type] or cfg.SCALES.chromatic
+
+  if tc.type == "drum" then
+    for s = 1, cfg.NUM_STEPS do
+      local in_range = s >= lo and s <= hi
+      local is_playhead = (s == current_step and self.playing)
+      local fill = fills[s]
+      local top_row = nil
+      local lv = 0
+
+      if tr.gates[s] then
+        top_row = self:vel_level_to_aux_row(tr.vels[s])
+        lv = is_playhead and 15 or 12
+      elseif fill then
+        top_row = self:vel_level_to_aux_row(fill.vel)
+        lv = is_playhead and 10 or 6
+      end
+
+      if top_row then
+        if not in_range then lv = math.max(1, math.floor(lv / 2)) end
+        for row = top_row, cfg.AUX_GRID_ROWS do
+          self:grid_led(dev, s, row, lv)
+        end
+      elseif in_range or is_playhead then
+        self:grid_led(dev, s, cfg.AUX_GRID_ROWS, is_playhead and 2 or 1)
+      end
+    end
+  else
+    for s = 1, cfg.NUM_STEPS do
+      local in_range = s >= lo and s <= hi
+      local is_playhead = (s == current_step and self.playing)
+      local fill = fills[s]
+      local fill_degree = fill and self:get_closest_aux_degree(t, fill.pitch) or nil
+      local fill_above = fill and self:is_aux_degree_above_visible_octave(t, fill.pitch) or false
+
+      for degree = 1, cfg.AUX_GRID_ROWS do
+        local row = self:degree_to_aux_row(degree)
+        local is_root = ((degree - 1) % #scale) == 0
+        local is_on = false
+        local is_fill = false
+        local is_above = false
+
+        if tr.gates[s] then
+          if tc.type == "poly" then
+            for _, stored_degree in ipairs(tr.pitches[s]) do
+              if self:get_closest_aux_degree(t, stored_degree) == degree then
+                is_on = true
+                is_above = self:is_aux_degree_above_visible_octave(t, stored_degree)
+                break
+              end
+            end
+          else
+            is_on = self:get_closest_aux_degree(t, tr.pitches[s]) == degree
+            if is_on then
+              is_above = self:is_aux_degree_above_visible_octave(t, tr.pitches[s])
+            end
+          end
+        elseif fill_degree then
+          is_fill = degree == fill_degree
+          is_above = fill_above
+        end
+
+        if is_on then
+          local lv = is_above and ((is_playhead and 7) or 5) or ((is_playhead and 15) or 12)
+          if not in_range then lv = math.max(1, math.floor(lv / 2)) end
+          self:grid_led(dev, s, row, lv)
+        elseif is_fill then
+          local lv = is_above and ((is_playhead and 6) or 4) or ((is_playhead and 10) or 6)
+          if not in_range then lv = math.max(1, math.floor(lv / 2)) end
+          self:grid_led(dev, s, row, lv)
+        elseif is_root and in_range then
+          self:grid_led(dev, s, row, 2)
+        elseif is_playhead and in_range then
+          self:grid_led(dev, s, row, 1)
+        end
+      end
+    end
+  end
+
+  dev:refresh()
+end
+
+function App:redraw_grid(force)
+  if not self.main_grid_dev and not self.aux_grid_dev then return end
+  if not force then
+    local now = now_ms()
+    if self.playing and self.use_midi_clock and (now - (self.last_redraw_time or 0) < self.redraw_min_ms) then
+      self.redraw_deferred = true
+      return
+    end
+  end
+
+  self:redraw_main_grid()
+  self:redraw_aux_grid()
   self.last_redraw_time = now_ms()
   self.redraw_deferred = false
 end
 
-function App:grid_led(x, y, l)
-  if self.grid_dev then self.grid_dev:led(x, y, l) end
+function App:grid_led(a, b, c, d)
+  local dev = self.main_grid_dev
+  local x = a
+  local y = b
+  local l = c
+
+  if d ~= nil then
+    dev = a
+    x = b
+    y = c
+    l = d
+  end
+
+  if dev then dev:led(x, y, l) end
 end
 
 function App:request_redraw()
@@ -1925,7 +2324,7 @@ function App:redraw_screen()
     local t = self.held.t
     local s = self.held.s
     local tr = self.tracks[t]
-    local tc = cfg.TRACK_CFG[t]
+    local tc = self.track_cfg[t]
     screen.level(15)
     screen.move(0, 12)
     screen.text("hold T" .. tostring(t) .. " S" .. tostring(s))
@@ -1980,7 +2379,37 @@ function App:redraw_screen()
   self.screen_dirty = false
 end
 
-function App:grid_event(x, y, z)
+function App:handle_aux_grid_event(x, y, z)
+  if not self.aux_grid_dev or z ~= 1 then return end
+  if x < 1 or x > cfg.NUM_STEPS or y < 1 or y > cfg.AUX_GRID_ROWS then return end
+
+  local t = clamp(tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+  self.sel_track = t
+
+  local tr = self:ensure_track_state(t)
+  local tc = self.track_cfg[t]
+
+  self:push_undo_state()
+
+  if tc.type == "drum" then
+    tr.gates[x] = true
+    tr.vels[x] = self:aux_row_to_vel_level(y)
+  elseif tc.type == "poly" then
+    tr.pitches[x] = self:poly_toggle_aux_degree(t, self:poly_active_pitches(tr, x), self:aux_row_to_degree(y))
+    tr.gates[x] = (#tr.pitches[x] > 0)
+    if tr.gates[x] then
+      tr.vels[x] = clamp(tonumber(tr.vels[x]) or cfg.DEFAULT_VEL_LEVEL, 1, 15)
+    end
+  else
+    tr.gates[x] = true
+    tr.vels[x] = clamp(tonumber(tr.vels[x]) or cfg.DEFAULT_VEL_LEVEL, 1, 15)
+    tr.pitches[x] = self:aux_row_to_degree(y)
+  end
+
+  self:request_redraw()
+end
+
+function App:handle_main_grid_event(x, y, z)
   if self.takeover_mode then
     if y == cfg.MOD_ROW then
       self:handle_mod_row(x, z)
@@ -1996,7 +2425,7 @@ function App:grid_event(x, y, z)
       local t = self.sel_track or 1
       self.sel_track = t
       local tr = self.tracks[t]
-      local tc = cfg.TRACK_CFG[t]
+      local tc = self.track_cfg[t]
 
       if z == 1 then
         self:push_undo_state()
@@ -2137,9 +2566,8 @@ function App:grid_event(x, y, z)
     if z == 1 then
       self:push_undo_state()
       self.held_time = now_ms()
-      if self.speed_mode then
-        self.sel_track = t
-      elseif self.mod_held[cfg.MOD.MUTE] then
+      self.sel_track = t
+      if self.mod_held[cfg.MOD.MUTE] then
         self.tracks[t].muted = not self.tracks[t].muted
       elseif self.mod_held[cfg.MOD.SOLO] then
         self.tracks[t].solo = not self.tracks[t].solo
@@ -2173,7 +2601,7 @@ function App:grid_event(x, y, z)
         if not self.tracks[t].gates[x] then
           self.tracks[t].gates[x] = true
           self.tracks[t].vels[x] = cfg.DEFAULT_VEL_LEVEL
-          if cfg.TRACK_CFG[t].type == "poly" and type(self.tracks[t].pitches[x]) ~= "table" then self.tracks[t].pitches[x] = { 1 } end
+          if self.track_cfg[t].type == "poly" and type(self.tracks[t].pitches[x]) ~= "table" then self.tracks[t].pitches[x] = { 1 } end
           self:add_temp_step(t, x)
         end
       elseif self.mod_held[cfg.MOD.SPICE] and not self.spice_pending_amount then
@@ -2186,7 +2614,7 @@ function App:grid_event(x, y, z)
         if not self.tracks[t].gates[x] then
           self.tracks[t].gates[x] = true
           self.tracks[t].vels[x] = cfg.DEFAULT_VEL_LEVEL
-          if cfg.TRACK_CFG[t].type == "poly" and type(self.tracks[t].pitches[x]) ~= "table" then self.tracks[t].pitches[x] = { 1 } end
+          if self.track_cfg[t].type == "poly" and type(self.tracks[t].pitches[x]) ~= "table" then self.tracks[t].pitches[x] = { 1 } end
         end
       end
       if self:any_mod_active() then
@@ -2203,6 +2631,10 @@ function App:grid_event(x, y, z)
     if not self.mod_held[cfg.MOD.SPICE] then self.spice_pending_amount = nil end
     self:request_redraw()
   end
+end
+
+function App:grid_event(x, y, z)
+  self:handle_main_grid_event(x, y, z)
 end
 
 function App:handle_midi_message(data)
@@ -2287,13 +2719,43 @@ function App:redraw_rate(fps)
   if self.grid_timer then self.grid_timer.time = 1 / rate end
 end
 
-function App:connect_midi(port)
-  self.midi_dev = midi.connect(port or 1)
-  if self.midi_dev then
-    self.midi_dev.event = function(data)
-      self:handle_midi_message(data)
+function App:connect_midi_from_params()
+  local slots = { 1, 0, 0, 0 }
+
+  if params and params.get then
+    local ok1, port1 = pcall(function() return params:get("permute_midi_out") end)
+    if ok1 and port1 ~= nil then slots[1] = clamp(tonumber(port1) or 1, 1, 16) end
+
+    for slot = 2, 4 do
+      local id = "permute_midi_out_" .. slot
+      local ok, port = pcall(function() return params:get(id) end)
+      if ok and port ~= nil then
+        slots[slot] = clamp((tonumber(port) or 1) - 1, 0, 16)
+      end
     end
   end
+
+  self.midi_port_slots = slots
+  self.midi_out_ports = self:get_selected_midi_ports()
+  self.midi_active_ports = {}
+
+  for _, port in ipairs(self.midi_out_ports) do
+    local port_id = port
+    self.midi_active_ports[port_id] = true
+    if not self.midi_devs[port_id] then
+      local dev = midi.connect(port_id)
+      self.midi_devs[port_id] = dev
+      if dev then
+        dev.event = function(data)
+          if self.midi_active_ports[port_id] then
+            self:handle_midi_message(data)
+          end
+        end
+      end
+    end
+  end
+
+  self.midi_dev = self.midi_devs[self.midi_out_ports[1]]
 end
 
 function App:key(n, z)
@@ -2315,16 +2777,33 @@ function App:enc(n, d)
 end
 
 function App:init()
-  self.grid_dev = grid.connect()
-  if self.grid_dev then
-    self.grid_dev.key = function(x, y, z)
-      self:grid_event(x, y, z)
+  for port = 1, 4 do
+    self:attach_grid_port(port)
+  end
+  self:refresh_grid_assignments()
+
+  if grid then
+    grid.add = function(new_grid)
+      if new_grid and new_grid.port then
+        self:attach_grid_port(new_grid.port)
+        self:refresh_grid_assignments()
+        self:request_redraw()
+      end
+    end
+
+    grid.remove = function(old_grid)
+      if old_grid and old_grid.port then
+        self.grid_ports[old_grid.port] = nil
+        self:refresh_grid_assignments()
+        self:request_redraw()
+      end
     end
   end
 
-  self:connect_midi(1)
   param_setup.setup(self)
+  self:connect_midi_from_params()
   self.factory_default_setup_values = self:capture_default_setup_values()
+  self.factory_default_track_cfg = self:export_track_cfg()
   self:load_default_setup(false)
 
   self.grid_timer = metro.init(function()

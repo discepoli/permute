@@ -10,6 +10,9 @@ M.NUM_TRACKS = 14
 M.NUM_STEPS = 16
 M.MOD_ROW = 16
 M.DYN_ROW = 15
+M.AUX_GRID_COLS = 16
+M.AUX_GRID_ROWS = 8
+M.AUX_GRID_VEL_BANDS = 8
 
 M.SCALES = {
   chromatic = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 },
