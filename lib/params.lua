@@ -5,6 +5,7 @@ local M = {}
 
 local SCALE_NAMES = { "chromatic", "diatonic", "pentatonic", "lightbath" }
 local TRACK_TYPES = { "drum", "mono", "poly" }
+local BEAT_REPEAT_MODES = { "full-row", "one-handed" }
 local SCALE_DEGREE_LABELS = {
   diatonic = { "I", "ii", "iii", "IV", "V", "vi", "vii" },
   pentatonic = { "I", "ii", "iii", "V", "vi" },
@@ -18,9 +19,17 @@ local function clamp(v, lo, hi)
   return v
 end
 
-local function midi_port_options()
+local function midi_port_options(include_off)
   local out = {}
-  for i = 1, 16 do out[i] = tostring(i) end
+  local idx = 1
+  if include_off then
+    out[idx] = "off"
+    idx = idx + 1
+  end
+  for i = 1, 16 do
+    out[idx] = tostring(i)
+    idx = idx + 1
+  end
   return out
 end
 
@@ -35,7 +44,7 @@ function M.setup(app)
   local prev_action_read = params.action_read
   local prev_action_delete = params.action_delete
 
-  params:add_group("permute_seq", "permute", 24)
+  params:add_group("permute_seq", "permute", 28)
 
   params:add_option("permute_scale", "scale", SCALE_NAMES, 2)
   params:set_action("permute_scale", function(v)
@@ -108,7 +117,22 @@ function M.setup(app)
 
   params:add_option("permute_midi_out", "midi out port", midi_port_options(), 1)
   params:set_action("permute_midi_out", function(v)
-    app:connect_midi(v)
+    app:connect_midi_from_params()
+  end)
+
+  params:add_option("permute_midi_out_2", "midi out port 2", midi_port_options(true), 1)
+  params:set_action("permute_midi_out_2", function()
+    app:connect_midi_from_params()
+  end)
+
+  params:add_option("permute_midi_out_3", "midi out port 3", midi_port_options(true), 1)
+  params:set_action("permute_midi_out_3", function()
+    app:connect_midi_from_params()
+  end)
+
+  params:add_option("permute_midi_out_4", "midi out port 4", midi_port_options(true), 1)
+  params:set_action("permute_midi_out_4", function()
+    app:connect_midi_from_params()
   end)
 
   params:add_number("permute_melody_gate_ticks", "melody gate ticks", 1, 24, 5)
@@ -169,6 +193,12 @@ function M.setup(app)
   params:add_number("permute_redraw_fps", "redraw fps", 10, 60, 60)
   params:set_action("permute_redraw_fps", function(v)
     app:redraw_rate(v)
+  end)
+
+  params:add_option("permute_beat_repeat_mode", "beat repeat mode", BEAT_REPEAT_MODES, 1)
+  params:set_action("permute_beat_repeat_mode", function(v)
+    app.beat_repeat_mode = BEAT_REPEAT_MODES[v] or BEAT_REPEAT_MODES[1]
+    app:request_redraw()
   end)
 
   params:add_trigger("permute_panic", "panic")

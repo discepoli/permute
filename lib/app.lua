@@ -89,6 +89,7 @@ function App.new()
   self.mod_double_tap_ms = 250
   self.takeover_mode = false
   self.beat_repeat_len = 0
+  self.beat_repeat_mode = "full-row"
   self.beat_repeat_excluded = {}
   self.speed_mode = false
   self.save_slots = {}
@@ -130,6 +131,10 @@ function App.new()
 
   self.grid_dev = nil
   self.midi_dev = nil
+  self.midi_devs = {}
+  self.midi_port_slots = { 1, 0, 0, 0 }
+  self.midi_out_ports = { 1 }
+  self.midi_active_ports = { [1] = true }
 
   self.crow_enabled = false
   self.crow_track_1 = 0
@@ -197,6 +202,9 @@ function App:default_setup_param_ids()
     "permute_send_clock_out",
     "permute_send_start_stop_out",
     "permute_midi_out",
+    "permute_midi_out_2",
+    "permute_midi_out_3",
+    "permute_midi_out_4",
     "permute_melody_gate_ticks",
     "permute_drum_gate_ticks",
     "permute_spice_accum_min",
@@ -204,7 +212,8 @@ function App:default_setup_param_ids()
     "permute_crow_enabled",
     "permute_crow_track_1",
     "permute_crow_track_2",
-    "permute_redraw_fps"
+    "permute_redraw_fps",
+    "permute_beat_repeat_mode"
   }
 
   for t = 1, cfg.NUM_TRACKS do
@@ -216,6 +225,117 @@ function App:default_setup_param_ids()
   end
 
   return ids
+end
+
+function App:export_track_cfg()
+  return deep_copy_table(cfg.TRACK_CFG)
+end
+
+function App:import_track_cfg(track_cfg, sync_params)
+  if type(track_cfg) ~= "table" then return end
+
+  for t = 1, cfg.NUM_TRACKS do
+    local src = track_cfg[t]
+    if src then
+      if type(cfg.TRACK_CFG[t]) ~= "table" then cfg.TRACK_CFG[t] = {} end
+      cfg.TRACK_CFG[t].type = src.type or cfg.TRACK_CFG[t].type
+      cfg.TRACK_CFG[t].ch = clamp(tonumber(src.ch) or cfg.TRACK_CFG[t].ch or 1, 1, 16)
+      cfg.TRACK_CFG[t].note = clamp(tonumber(src.note) or cfg.TRACK_CFG[t].note or 60, 0, 127)
+    end
+  end
+
+  if sync_params and params and params.set then
+    local was_suspended = self.suspend_history
+    self.suspend_history = true
+    for t = 1, cfg.NUM_TRACKS do
+      local tc = cfg.TRACK_CFG[t]
+      if tc then
+        local gid = "permute_track_" .. t
+        local type_idx = (tc.type == "drum") and 1 or ((tc.type == "mono") and 2 or 3)
+        pcall(function() params:set(gid .. "_type", type_idx) end)
+        pcall(function() params:set(gid .. "_ch", clamp(tonumber(tc.ch) or 1, 1, 16)) end)
+        pcall(function() params:set(gid .. "_note", clamp(tonumber(tc.note) or 60, 0, 127)) end)
+      end
+    end
+    self.suspend_history = was_suspended
+  end
+end
+
+function App:sync_track_cfg_from_params()
+  if not params or not params.get then return end
+
+  local track_cfg = {}
+  for t = 1, cfg.NUM_TRACKS do
+    local gid = "permute_track_" .. t
+    local type_idx = 1
+    local ok_type, loaded_type = pcall(function() return params:get(gid .. "_type") end)
+    if ok_type and loaded_type ~= nil then type_idx = tonumber(loaded_type) or 1 end
+    track_cfg[t] = {
+      type = (type_idx == 3 and "poly") or (type_idx == 2 and "mono") or "drum",
+      ch = clamp(tonumber(params:get(gid .. "_ch")) or 1, 1, 16),
+      note = clamp(tonumber(params:get(gid .. "_note")) or 60, 0, 127)
+    }
+  end
+
+  self:import_track_cfg(track_cfg, false)
+end
+
+function App:get_selected_midi_ports()
+  local ports = {}
+  local seen = {}
+  for _, port in ipairs(self.midi_port_slots or {}) do
+    local midi_port = clamp(tonumber(port) or 0, 0, 16)
+    if midi_port > 0 and not seen[midi_port] then
+      ports[#ports + 1] = midi_port
+      seen[midi_port] = true
+    end
+  end
+  return ports
+end
+
+function App:capture_midi_ports(ports)
+  if type(ports) == "table" then return deep_copy_table(ports) end
+  return self:get_selected_midi_ports()
+end
+
+function App:get_beat_repeat_length_for_column(x)
+  if self.beat_repeat_mode == "one-handed" then
+    local map = {
+      [13] = 1,
+      [14] = 2,
+      [15] = 4,
+      [16] = 8
+    }
+    return map[x]
+  end
+  if x >= 1 and x <= 16 then return x end
+  return nil
+end
+
+function App:get_beat_repeat_column_for_length(len)
+  local rpt_len = tonumber(len) or 0
+  if self.beat_repeat_mode == "one-handed" then
+    local map = {
+      [1] = 13,
+      [2] = 14,
+      [4] = 15,
+      [8] = 16
+    }
+    return map[rpt_len]
+  end
+  if rpt_len >= 1 and rpt_len <= 16 then return rpt_len end
+  return nil
+end
+
+function App:for_each_midi_device(ports, fn)
+  local selected_ports = self:capture_midi_ports(ports)
+  for _, port in ipairs(selected_ports) do
+    local dev = self.midi_devs[port]
+    if dev then
+      fn(dev, port)
+    end
+  end
+  return selected_ports
 end
 
 function App:set_spice_accum_bounds(min_v, max_v)
@@ -261,7 +381,10 @@ function App:save_default_setup(show_feedback)
 
   local values = self:capture_default_setup_values()
 
-  tab.save({ params = values }, self:default_setup_path())
+  tab.save({
+    params = values,
+    track_cfg = self:export_track_cfg()
+  }, self:default_setup_path())
   if show_feedback then self:flash_status("default", "saved") end
   return true
 end
@@ -289,6 +412,11 @@ function App:load_default_setup(show_feedback)
       pcall(function() params:set(id, val) end)
     end
   end
+  if type(loaded.track_cfg) == "table" then
+    self:import_track_cfg(loaded.track_cfg, true)
+  else
+    self:sync_track_cfg_from_params()
+  end
   self.suspend_history = was_suspended
   self:request_redraw()
 
@@ -311,6 +439,7 @@ function App:load_factory_default_setup(show_feedback)
       pcall(function() params:set(id, val) end)
     end
   end
+  self:sync_track_cfg_from_params()
   self.suspend_history = was_suspended
   self:request_redraw()
 
@@ -337,6 +466,7 @@ function App:export_state()
     spice = deep_copy_table(self.spice),
     save_slots = deep_copy_table(self.save_slots),
     beat_repeat_len = self.beat_repeat_len,
+    beat_repeat_mode = self.beat_repeat_mode,
     beat_repeat_excluded = deep_copy_table(self.beat_repeat_excluded),
     master_seq_len_enabled = self.master_seq_len_enabled,
     master_seq_len = self.master_seq_len,
@@ -348,6 +478,7 @@ function App:export_state()
     key_root = self.key_root,
     key_transpose = self.key_transpose,
     scale_degree = self.scale_degree,
+    track_cfg = self:export_track_cfg(),
     sel_track = self.sel_track,
     step = self.step
   }
@@ -355,6 +486,10 @@ end
 
 function App:import_state(state)
   if type(state) ~= "table" then return end
+
+  if type(state.track_cfg) == "table" then
+    self:import_track_cfg(state.track_cfg, false)
+  end
 
   if type(state.tracks) == "table" then self.tracks = deep_copy_table(state.tracks) end
   if type(state.track_steps) == "table" then self.track_steps = deep_copy_table(state.track_steps) end
@@ -368,6 +503,7 @@ function App:import_state(state)
   if type(state.beat_repeat_excluded) == "table" then self.beat_repeat_excluded = deep_copy_table(state.beat_repeat_excluded) end
 
   self.beat_repeat_len = tonumber(state.beat_repeat_len) or 0
+  self.beat_repeat_mode = state.beat_repeat_mode or self.beat_repeat_mode
   self.master_seq_len_enabled = not not state.master_seq_len_enabled
   self.master_seq_len = clamp(tonumber(state.master_seq_len) or cfg.DEFAULT_MASTER_SEQ_LEN, 1, cfg.MAX_MASTER_SEQ_LEN)
   if state.send_midi_clock_out ~= nil then self.send_midi_clock_out = not not state.send_midi_clock_out end
@@ -412,39 +548,14 @@ end
 
 function App:export_undo_state()
   return {
-    app_state = self:export_state(),
-    track_cfg = deep_copy_table(cfg.TRACK_CFG)
+    app_state = self:export_state()
   }
 end
 
 function App:import_undo_state(state)
   if type(state) ~= "table" then return end
-
-  if type(state.track_cfg) == "table" then
-    for t = 1, cfg.NUM_TRACKS do
-      local src = state.track_cfg[t]
-      if src then
-        if type(cfg.TRACK_CFG[t]) ~= "table" then cfg.TRACK_CFG[t] = {} end
-        cfg.TRACK_CFG[t].type = src.type or cfg.TRACK_CFG[t].type
-        cfg.TRACK_CFG[t].ch = clamp(tonumber(src.ch) or cfg.TRACK_CFG[t].ch or 1, 1, 16)
-        cfg.TRACK_CFG[t].note = clamp(tonumber(src.note) or cfg.TRACK_CFG[t].note or 60, 0, 127)
-      end
-    end
-    if params and params.set then
-      for t = 1, cfg.NUM_TRACKS do
-        local tc = cfg.TRACK_CFG[t]
-        if tc then
-          local gid = "permute_track_" .. t
-          local type_idx = (tc.type == "drum") and 1 or ((tc.type == "mono") and 2 or 3)
-          pcall(function() params:set(gid .. "_type", type_idx) end)
-          pcall(function() params:set(gid .. "_ch", clamp(tonumber(tc.ch) or 1, 1, 16)) end)
-          pcall(function() params:set(gid .. "_note", clamp(tonumber(tc.note) or 60, 0, 127)) end)
-        end
-      end
-    end
-  end
-
   self:import_state(state.app_state or state)
+  self:import_track_cfg((state.app_state or state).track_cfg, true)
 end
 
 function App:push_undo_state()
@@ -500,7 +611,16 @@ function App:load_preset(number)
   if not tab or not tab.load then return end
   local loaded = tab.load(self:preset_path(number))
   if type(loaded) == "table" then
+    self:stop_all_notes()
+    local was_suspended = self.suspend_history
+    self.suspend_history = true
     self:import_state(loaded)
+    if type(loaded.track_cfg) == "table" then
+      self:import_track_cfg(loaded.track_cfg, true)
+    else
+      self:sync_track_cfg_from_params()
+    end
+    self.suspend_history = was_suspended
   end
 end
 
@@ -963,8 +1083,11 @@ function App:handle_dynamic_row(x, z)
       self.rand_steps_shuffled = true
       applied_value = tostring(x)
     elseif self.mod_held[cfg.MOD.BEAT_RPT] then
-      self.beat_repeat_len = (self.beat_repeat_len == x) and 0 or x
-      applied_value = tostring(self.beat_repeat_len)
+      local next_len = self:get_beat_repeat_length_for_column(x)
+      if next_len then
+        self.beat_repeat_len = (self.beat_repeat_len == next_len) and 0 or next_len
+        applied_value = tostring(self.beat_repeat_len)
+      end
     elseif self.speed_mode then
       if self.sel_track then
         local center = 8
@@ -1168,29 +1291,34 @@ function App:get_track_step(t)
   return lo + pos
 end
 
-function App:midi_note_on(note, vel, ch)
-  if not self.midi_dev then return end
-  self.midi_dev:note_on(note, vel, ch)
+function App:midi_note_on(note, vel, ch, ports)
+  self:for_each_midi_device(ports, function(dev)
+    dev:note_on(note, vel, ch)
+  end)
 end
 
-function App:midi_note_off(note, vel, ch)
-  if not self.midi_dev then return end
-  self.midi_dev:note_off(note, vel, ch)
+function App:midi_note_off(note, vel, ch, ports)
+  self:for_each_midi_device(ports, function(dev)
+    dev:note_off(note, vel, ch)
+  end)
 end
 
-function App:midi_realtime_clock()
-  if not self.midi_dev then return end
-  pcall(function() self.midi_dev:clock() end)
+function App:midi_realtime_clock(ports)
+  self:for_each_midi_device(ports, function(dev)
+    pcall(function() dev:clock() end)
+  end)
 end
 
-function App:midi_realtime_start()
-  if not self.midi_dev then return end
-  pcall(function() self.midi_dev:start() end)
+function App:midi_realtime_start(ports)
+  self:for_each_midi_device(ports, function(dev)
+    pcall(function() dev:start() end)
+  end)
 end
 
-function App:midi_realtime_stop()
-  if not self.midi_dev then return end
-  pcall(function() self.midi_dev:stop() end)
+function App:midi_realtime_stop(ports)
+  self:for_each_midi_device(ports, function(dev)
+    pcall(function() dev:stop() end)
+  end)
 end
 
 function App:trigger_crow(track, note)
@@ -1208,11 +1336,12 @@ function App:trigger_crow(track, note)
   if track == self.crow_track_2 then out(2) end
 end
 
-function App:schedule_note_off(track, note, ch, delay_ticks)
+function App:schedule_note_off(track, note, ch, delay_ticks, ports)
   self.active_note_offs[#self.active_note_offs + 1] = {
     track = track,
     note = note,
     ch = ch,
+    ports = self:capture_midi_ports(ports),
     off_tick = self.transport_clock + math.max(1, tonumber(delay_ticks) or 1)
   }
 end
@@ -1233,7 +1362,7 @@ function App:process_scheduled_note_offs()
   while i <= #self.active_note_offs do
     local ev = self.active_note_offs[i]
     if self.transport_clock >= ev.off_tick then
-      self:midi_note_off(ev.note, 0, ev.ch)
+      self:midi_note_off(ev.note, 0, ev.ch, ev.ports)
       table.remove(self.active_note_offs, i)
     else
       i = i + 1
@@ -1245,10 +1374,10 @@ function App:note_off_last_for_track(track)
   local prev = self.last_notes[track]
   if not prev then return end
   if prev.note then
-    self:midi_note_off(prev.note, 0, prev.ch)
+    self:midi_note_off(prev.note, 0, prev.ch, prev.ports)
   else
     for _, nd in ipairs(prev) do
-      self:midi_note_off(nd.note, 0, nd.ch)
+      self:midi_note_off(nd.note, 0, nd.ch, nd.ports)
     end
   end
   self.last_notes[track] = nil
@@ -1280,30 +1409,31 @@ function App:play_tracks(pulse_scale)
       end
 
       if not tr.muted and should_play then
+        local output_ports = self:capture_midi_ports()
         local vel
         if has_fill and not tr.gates[st] then
           vel = self.fill_patterns[t][st].vel
           if tc.type == "drum" then
             local note = clamp(tc.note, 0, 127)
-            self:midi_note_on(note, self:vel_to_midi(vel), tc.ch)
+            self:midi_note_on(note, self:vel_to_midi(vel), tc.ch, output_ports)
             self:trigger_crow(t, note)
-            self:schedule_note_off(t, note, tc.ch, gate_ticks)
-            self.last_notes[t] = { note = note, ch = tc.ch }
+            self:schedule_note_off(t, note, tc.ch, gate_ticks, output_ports)
+            self.last_notes[t] = { note = note, ch = tc.ch, ports = output_ports }
           else
             local note = self:get_pitch(t, self.fill_patterns[t][st].pitch, 0)
-            self:midi_note_on(note, self:vel_to_midi(vel), tc.ch)
+            self:midi_note_on(note, self:vel_to_midi(vel), tc.ch, output_ports)
             self:trigger_crow(t, note)
-            self:schedule_note_off(t, note, tc.ch, gate_ticks)
-            self.last_notes[t] = { note = note, ch = tc.ch }
+            self:schedule_note_off(t, note, tc.ch, gate_ticks, output_ports)
+            self.last_notes[t] = { note = note, ch = tc.ch, ports = output_ports }
           end
         else
           vel = tr.vels[st]
           if tc.type == "drum" then
             local note = clamp(tc.note, 0, 127)
-            self:midi_note_on(note, self:vel_to_midi(vel), tc.ch)
+            self:midi_note_on(note, self:vel_to_midi(vel), tc.ch, output_ports)
             self:trigger_crow(t, note)
-            self:schedule_note_off(t, note, tc.ch, gate_ticks)
-            self.last_notes[t] = { note = note, ch = tc.ch }
+            self:schedule_note_off(t, note, tc.ch, gate_ticks, output_ports)
+            self.last_notes[t] = { note = note, ch = tc.ch, ports = output_ports }
           elseif tc.type == "poly" then
             local sp = self.spice[t] and self.spice[t][st]
             local spice_offset = sp and sp.current or 0
@@ -1313,10 +1443,10 @@ function App:play_tracks(pulse_scale)
               chord[#chord + 1] = self:get_pitch(t, d, spice_offset)
             end
             for _, note in ipairs(chord) do
-              self:midi_note_on(note, self:vel_to_midi(vel), tc.ch)
+              self:midi_note_on(note, self:vel_to_midi(vel), tc.ch, output_ports)
               self:trigger_crow(t, note)
-              self:schedule_note_off(t, note, tc.ch, gate_ticks)
-              notes[#notes + 1] = { note = note, ch = tc.ch }
+              self:schedule_note_off(t, note, tc.ch, gate_ticks, output_ports)
+              notes[#notes + 1] = { note = note, ch = tc.ch, ports = output_ports }
             end
             if #notes > 0 then
               self.last_notes[t] = notes
@@ -1325,10 +1455,10 @@ function App:play_tracks(pulse_scale)
             local sp = self.spice[t] and self.spice[t][st]
             local spice_offset = sp and sp.current or 0
             local note = self:get_pitch(t, tr.pitches[st], spice_offset)
-            self:midi_note_on(note, self:vel_to_midi(vel), tc.ch)
+            self:midi_note_on(note, self:vel_to_midi(vel), tc.ch, output_ports)
             self:trigger_crow(t, note)
-            self:schedule_note_off(t, note, tc.ch, gate_ticks)
-            self.last_notes[t] = { note = note, ch = tc.ch }
+            self:schedule_note_off(t, note, tc.ch, gate_ticks, output_ports)
+            self.last_notes[t] = { note = note, ch = tc.ch, ports = output_ports }
           end
         end
       end
@@ -1426,10 +1556,10 @@ end
 function App:stop_all_notes()
   for _, data in pairs(self.last_notes) do
     if data.note then
-      self:midi_note_off(data.note, 0, data.ch)
+      self:midi_note_off(data.note, 0, data.ch, data.ports)
     else
       for _, nd in ipairs(data) do
-        self:midi_note_off(nd.note, 0, nd.ch)
+        self:midi_note_off(nd.note, 0, nd.ch, nd.ports)
       end
     end
   end
@@ -1654,7 +1784,14 @@ function App:draw_dynamic_row()
 
   if self.mod_held[cfg.MOD.BEAT_RPT] then
     local rpt_len = tonumber(self.beat_repeat_len) or 0
-    for x = 1, 16 do self:grid_led(x, cfg.DYN_ROW, x <= rpt_len and 10 or 2) end
+    if self.beat_repeat_mode == "one-handed" then
+      for x = 1, 16 do self:grid_led(x, cfg.DYN_ROW, 1) end
+      for _, col in ipairs({ 13, 14, 15, 16 }) do
+        self:grid_led(col, cfg.DYN_ROW, self:get_beat_repeat_column_for_length(rpt_len) == col and 10 or 3)
+      end
+    else
+      for x = 1, 16 do self:grid_led(x, cfg.DYN_ROW, x <= rpt_len and 10 or 2) end
+    end
     return
   end
 
@@ -2137,9 +2274,8 @@ function App:grid_event(x, y, z)
     if z == 1 then
       self:push_undo_state()
       self.held_time = now_ms()
-      if self.speed_mode then
-        self.sel_track = t
-      elseif self.mod_held[cfg.MOD.MUTE] then
+      self.sel_track = t
+      if self.mod_held[cfg.MOD.MUTE] then
         self.tracks[t].muted = not self.tracks[t].muted
       elseif self.mod_held[cfg.MOD.SOLO] then
         self.tracks[t].solo = not self.tracks[t].solo
@@ -2287,13 +2423,43 @@ function App:redraw_rate(fps)
   if self.grid_timer then self.grid_timer.time = 1 / rate end
 end
 
-function App:connect_midi(port)
-  self.midi_dev = midi.connect(port or 1)
-  if self.midi_dev then
-    self.midi_dev.event = function(data)
-      self:handle_midi_message(data)
+function App:connect_midi_from_params()
+  local slots = { 1, 0, 0, 0 }
+
+  if params and params.get then
+    local ok1, port1 = pcall(function() return params:get("permute_midi_out") end)
+    if ok1 and port1 ~= nil then slots[1] = clamp(tonumber(port1) or 1, 1, 16) end
+
+    for slot = 2, 4 do
+      local id = "permute_midi_out_" .. slot
+      local ok, port = pcall(function() return params:get(id) end)
+      if ok and port ~= nil then
+        slots[slot] = clamp((tonumber(port) or 1) - 1, 0, 16)
+      end
     end
   end
+
+  self.midi_port_slots = slots
+  self.midi_out_ports = self:get_selected_midi_ports()
+  self.midi_active_ports = {}
+
+  for _, port in ipairs(self.midi_out_ports) do
+    local port_id = port
+    self.midi_active_ports[port_id] = true
+    if not self.midi_devs[port_id] then
+      local dev = midi.connect(port_id)
+      self.midi_devs[port_id] = dev
+      if dev then
+        dev.event = function(data)
+          if self.midi_active_ports[port_id] then
+            self:handle_midi_message(data)
+          end
+        end
+      end
+    end
+  end
+
+  self.midi_dev = self.midi_devs[self.midi_out_ports[1]]
 end
 
 function App:key(n, z)
@@ -2322,8 +2488,8 @@ function App:init()
     end
   end
 
-  self:connect_midi(1)
   param_setup.setup(self)
+  self:connect_midi_from_params()
   self.factory_default_setup_values = self:capture_default_setup_values()
   self:load_default_setup(false)
 
