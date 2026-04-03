@@ -1401,13 +1401,67 @@ function App:handle_dynamic_row(x, z)
   self:request_redraw()
 end
 
+function App:is_main_grid_128()
+  local dev = self.main_grid_dev
+  local device = dev and dev.device
+  return device and device.cols == 16 and device.rows == 8 or false
+end
+
+function App:get_main_mod_row()
+  return self:is_main_grid_128() and 8 or cfg.MOD_ROW
+end
+
+function App:get_main_dynamic_row()
+  return self:is_main_grid_128() and 7 or cfg.DYN_ROW
+end
+
+function App:get_main_overview_track_rows()
+  return self:get_main_dynamic_row() - 1
+end
+
+function App:get_main_takeover_note_rows()
+  return self:get_main_mod_row() - 1
+end
+
+function App:get_main_track_page_start()
+  if not self:is_main_grid_128() then return 1 end
+  local page_size = self:get_main_overview_track_rows()
+  local selected = clamp(tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+  local start = math.floor((selected - 1) / page_size) * page_size + 1
+  return clamp(start, 1, math.max(1, cfg.NUM_TRACKS - page_size + 1))
+end
+
 function App:row_to_track(y)
-  if y >= 1 and y <= cfg.NUM_TRACKS then return 15 - y end
-  return nil
+  local visible_rows = self:get_main_overview_track_rows()
+  if y < 1 or y > visible_rows then return nil end
+  return self:get_main_track_page_start() + (visible_rows - y)
 end
 
 function App:track_to_row(t)
-  return 15 - t
+  local visible_rows = self:get_main_overview_track_rows()
+  local page_start = self:get_main_track_page_start()
+  local page_end = math.min(cfg.NUM_TRACKS, page_start + visible_rows - 1)
+  if t < page_start or t > page_end then return nil end
+  return visible_rows - (t - page_start)
+end
+
+function App:main_takeover_row_to_degree(y)
+  local rows = self:get_main_takeover_note_rows()
+  return clamp(rows - y + 1, 1, rows)
+end
+
+function App:main_takeover_row_to_vel_level(y)
+  local rows = self:get_main_takeover_note_rows()
+  if rows <= 1 then return cfg.DEFAULT_VEL_LEVEL end
+  local ratio = (rows - clamp(y, 1, rows)) / (rows - 1)
+  return clamp(math.floor((ratio * 14) + 1 + 0.5), 1, 15)
+end
+
+function App:vel_level_to_main_takeover_row(level)
+  local rows = self:get_main_takeover_note_rows()
+  if rows <= 1 then return 1 end
+  local stored = clamp(tonumber(level) or cfg.DEFAULT_VEL_LEVEL, 1, 15)
+  return clamp(rows - math.floor(((stored - 1) * (rows - 1)) / 14 + 0.5), 1, rows)
 end
 
 function App:vel_to_midi(level)
@@ -1454,15 +1508,19 @@ function App:refresh_grid_assignments()
   if #connected == 1 then
     main = connected[1]
   elseif #connected > 1 then
-    for _, dev in ipairs(connected) do
-      if not self:is_aux_grid_device(dev) then
-        main = dev
-        break
-      end
-    end
-
-    if not main then
+    if self:is_aux_grid_device(connected[1]) then
       main = connected[1]
+    else
+      for _, dev in ipairs(connected) do
+        if not self:is_aux_grid_device(dev) then
+          main = dev
+          break
+        end
+      end
+
+      if not main then
+        main = connected[1]
+      end
     end
 
     for _, dev in ipairs(connected) do
@@ -2145,11 +2203,12 @@ function App:clear_modifier_all_tracks(mod)
 end
 
 function App:draw_dynamic_row()
+  local dyn_row = self:get_main_dynamic_row()
   if self.held and not self:any_mod_active() and not self.takeover_mode then
     local tr = self.tracks[self.held.t]
     if self.track_cfg[self.held.t].type == "drum" then
       local v = tr.vels[self.held.s]
-      for x = 1, 16 do self:grid_led(x, cfg.DYN_ROW, (x - 1) <= v and 10 or 2) end
+      for x = 1, 16 do self:grid_led(x, dyn_row, (x - 1) <= v and 10 or 2) end
     else
       local p = tr.pitches[self.held.s]
       local scale = cfg.SCALES[self.scale_type] or cfg.SCALES.chromatic
@@ -2157,9 +2216,9 @@ function App:draw_dynamic_row()
         local is_root = ((x - 1) % #scale) == 0
         local is_on = false
         if self.track_cfg[self.held.t].type == "poly" then is_on = self:poly_has_pitch(p, x) else is_on = (x == p) end
-        if is_on then self:grid_led(x, cfg.DYN_ROW, 15)
-        elseif is_root then self:grid_led(x, cfg.DYN_ROW, 5)
-        else self:grid_led(x, cfg.DYN_ROW, 2) end
+        if is_on then self:grid_led(x, dyn_row, 15)
+        elseif is_root then self:grid_led(x, dyn_row, 5)
+        else self:grid_led(x, dyn_row, 2) end
       end
     end
     return
@@ -2169,9 +2228,9 @@ function App:draw_dynamic_row()
     local oct = self.tracks[self.sel_track].octave
     for x = 1, 16 do
       local o = x - 8
-      if o == oct then self:grid_led(x, cfg.DYN_ROW, 15)
-      elseif x == 8 then self:grid_led(x, cfg.DYN_ROW, 5)
-      else self:grid_led(x, cfg.DYN_ROW, 2) end
+      if o == oct then self:grid_led(x, dyn_row, 15)
+      elseif x == 8 then self:grid_led(x, dyn_row, 5)
+      else self:grid_led(x, dyn_row, 2) end
     end
     return
   end
@@ -2181,30 +2240,30 @@ function App:draw_dynamic_row()
     for x = 1, 16 do
       local o = x - 8
       if o == trans then
-        self:grid_led(x, cfg.DYN_ROW, 15)
+        self:grid_led(x, dyn_row, 15)
       elseif x == 8 then
-        self:grid_led(x, cfg.DYN_ROW, 5)
+        self:grid_led(x, dyn_row, 5)
       else
-        self:grid_led(x, cfg.DYN_ROW, 2)
+        self:grid_led(x, dyn_row, 2)
       end
     end
     return
   end
 
   if self.mod_held[cfg.MOD.RAND_NOTES] or self.mod_held[cfg.MOD.RAND_STEPS] then
-    for x = 1, 16 do self:grid_led(x, cfg.DYN_ROW, 2) end
+    for x = 1, 16 do self:grid_led(x, dyn_row, 2) end
     return
   end
 
   if self.mod_held[cfg.MOD.BEAT_RPT] then
     local rpt_len = tonumber(self.beat_repeat_len) or 0
     if self.beat_repeat_mode == "one-handed" then
-      for x = 1, 16 do self:grid_led(x, cfg.DYN_ROW, 1) end
+      for x = 1, 16 do self:grid_led(x, dyn_row, 1) end
       for _, col in ipairs({ 13, 14, 15, 16 }) do
-        self:grid_led(col, cfg.DYN_ROW, self:get_beat_repeat_column_for_length(rpt_len) == col and 10 or 3)
+        self:grid_led(col, dyn_row, self:get_beat_repeat_column_for_length(rpt_len) == col and 10 or 3)
       end
     else
-      for x = 1, 16 do self:grid_led(x, cfg.DYN_ROW, x <= rpt_len and 10 or 2) end
+      for x = 1, 16 do self:grid_led(x, dyn_row, x <= rpt_len and 10 or 2) end
     end
     return
   end
@@ -2216,14 +2275,14 @@ function App:draw_dynamic_row()
       local sel = amt + 8
       if amt ~= 0 then
         if (amt > 0 and x >= center and x <= sel) or (amt < 0 and x <= center and x >= sel) then
-          self:grid_led(x, cfg.DYN_ROW, 10)
+          self:grid_led(x, dyn_row, 10)
         elseif x == center then
-          self:grid_led(x, cfg.DYN_ROW, 5)
+          self:grid_led(x, dyn_row, 5)
         else
-          self:grid_led(x, cfg.DYN_ROW, 2)
+          self:grid_led(x, dyn_row, 2)
         end
       else
-        if x == center then self:grid_led(x, cfg.DYN_ROW, 5) else self:grid_led(x, cfg.DYN_ROW, 2) end
+        if x == center then self:grid_led(x, dyn_row, 5) else self:grid_led(x, dyn_row, 2) end
       end
     end
     return
@@ -2231,14 +2290,14 @@ function App:draw_dynamic_row()
 
   if self.mod_held[cfg.MOD.SHIFT] and self:mod_active(cfg.MOD.FILL) then
     for x = 1, 16 do
-      if x <= 4 then self:grid_led(x, cfg.DYN_ROW, self.save_slots[x] and 8 or 3) else self:grid_led(x, cfg.DYN_ROW, 1) end
+      if x <= 4 then self:grid_led(x, dyn_row, self.save_slots[x] and 8 or 3) else self:grid_led(x, dyn_row, 1) end
     end
     return
   end
 
   if self.mod_held[cfg.MOD.SHIFT] and self:mod_active(cfg.MOD.TEMP) then
     for x = 1, 16 do
-      if x <= 4 then self:grid_led(x, cfg.DYN_ROW, self.save_slots[x] and 12 or 2) else self:grid_led(x, cfg.DYN_ROW, 1) end
+      if x <= 4 then self:grid_led(x, dyn_row, self.save_slots[x] and 12 or 2) else self:grid_led(x, dyn_row, 1) end
     end
     return
   end
@@ -2249,13 +2308,13 @@ function App:draw_dynamic_row()
     local div = self.sel_track and self.track_clock_div[self.sel_track] or 1
     for x = 1, 16 do
       if x == center then
-        self:grid_led(x, cfg.DYN_ROW, 15)
+        self:grid_led(x, dyn_row, 15)
       elseif x < center then
         local m = center - x + 1
-        self:grid_led(x, cfg.DYN_ROW, (self.sel_track and div == 1 and mult == m) and 12 or 3)
+        self:grid_led(x, dyn_row, (self.sel_track and div == 1 and mult == m) and 12 or 3)
       else
         local d = x - center + 1
-        self:grid_led(x, cfg.DYN_ROW, (self.sel_track and mult == 1 and div == d) and 12 or 3)
+        self:grid_led(x, dyn_row, (self.sel_track and mult == 1 and div == d) and 12 or 3)
       end
     end
     return
@@ -2263,6 +2322,7 @@ function App:draw_dynamic_row()
 end
 
 function App:draw_mod_row()
+  local mod_row = self:get_main_mod_row()
   for x = 1, 16 do
     local lv = 0
     if self:mod_active(x) then
@@ -2276,7 +2336,7 @@ function App:draw_mod_row()
     elseif x ~= 5 then
       lv = 3
     end
-    if lv > 0 then self:grid_led(x, cfg.MOD_ROW, lv) end
+    if lv > 0 then self:grid_led(x, mod_row, lv) end
   end
 end
 
@@ -2286,6 +2346,7 @@ function App:draw_takeover()
   local step_cache = self:build_arc_step_cache(self.sel_track, tr, tc)
   local fills = self.fill_patterns[self.sel_track] or {}
   local current_step = self:get_track_step(self.sel_track)
+  local takeover_rows = self:get_main_takeover_note_rows()
 
   local lo, hi = self:get_track_bounds(tr)
 
@@ -2295,30 +2356,27 @@ function App:draw_takeover()
       local fill = fills[s]
       local step_data = step_cache[s]
       if in_range and self:is_beat_column(s) then
-        for row = 1, 15 do
+        for row = 1, takeover_rows do
           self:grid_led(s, row, 2)
         end
       end
       if step_data then
-        local v = step_data.vel
-        for row = 1, 15 do
-          local level_at_row = 16 - row
-          if level_at_row <= v then
-            local manual = step_data.source == "manual"
-            local lv = manual and ((s == current_step and self.playing) and 15 or 10)
-              or ((s == current_step and self.playing) and 11 or 7)
-            if not in_range then lv = math.floor(lv / 2) end
-            self:grid_led(s, row, lv)
-          end
+        local top_row = self:vel_level_to_main_takeover_row(step_data.vel)
+        local manual = step_data.source == "manual"
+        local lv = manual and ((s == current_step and self.playing) and 15 or 10)
+          or ((s == current_step and self.playing) and 11 or 7)
+        if not in_range then lv = math.floor(lv / 2) end
+        for row = top_row, takeover_rows do
+          self:grid_led(s, row, lv)
         end
       elseif fill then
-        local row = clamp(16 - clamp(tonumber(fill.vel) or cfg.DEFAULT_VEL_LEVEL, 1, 15), 1, 15)
+        local row = self:vel_level_to_main_takeover_row(fill.vel)
         local lv = (s == current_step and self.playing) and 12 or 6
         if not in_range then lv = math.floor(lv / 2) end
         self:grid_led(s, row, lv)
-        self:grid_led(s, 15, math.max((s == current_step and self.playing) and 4 or 1, 3))
+        self:grid_led(s, takeover_rows, math.max((s == current_step and self.playing) and 4 or 1, 3))
       else
-        if s == current_step and self.playing then self:grid_led(s, 15, 4) elseif in_range then self:grid_led(s, 15, 1) end
+        if s == current_step and self.playing then self:grid_led(s, takeover_rows, 4) elseif in_range then self:grid_led(s, takeover_rows, 1) end
       end
     end
   else
@@ -2327,20 +2385,20 @@ function App:draw_takeover()
       local is_playhead = (s == current_step and self.playing)
       local in_range = s >= lo and s <= hi
       local fill = fills[s]
-      local fill_degree = fill and clamp(tonumber(fill.pitch) or 1, 1, 16) or nil
+      local fill_degree = fill and clamp(tonumber(fill.pitch) or 1, 1, takeover_rows) or nil
       local step_data = step_cache[s]
       if in_range and self:is_beat_column(s) then
-        for row = 1, 15 do
+        for row = 1, takeover_rows do
           self:grid_led(s, row, 2)
         end
       end
-      for row = 1, 15 do
-        local degree = 16 - row
+      for row = 1, takeover_rows do
+        local degree = self:main_takeover_row_to_degree(row)
         local is_root = ((degree - 1) % #scale) == 0
         local is_on = false
         local is_fill = false
         if step_data then
-          if tc.type == "poly" then is_on = self:poly_has_pitch(step_data.pitch, degree) else is_on = step_data.pitch == degree end
+          if tc.type == "poly" then is_on = self:poly_has_pitch(step_data.pitch, degree) else is_on = clamp(tonumber(step_data.pitch) or 1, 1, takeover_rows) == degree end
         elseif fill_degree then
           is_fill = degree == fill_degree
         end
@@ -2362,7 +2420,7 @@ function App:draw_takeover()
     end
   end
 
-  self:grid_led(cfg.MOD.TAKEOVER, cfg.MOD_ROW, 15)
+  self:grid_led(cfg.MOD.TAKEOVER, self:get_main_mod_row(), 15)
 end
 
 function App:redraw_main_grid()
@@ -2372,12 +2430,14 @@ function App:redraw_main_grid()
   dev:all(0)
   if self.takeover_mode and self.sel_track then
     self:draw_takeover()
-    if self:is_modifier_dynamic_row_active() then
+    if self:is_modifier_dynamic_row_active() and not self:is_main_grid_128() then
       self:draw_dynamic_row()
     end
     self:draw_mod_row()
   else
-    for t = 1, cfg.NUM_TRACKS do
+    local page_start = self:get_main_track_page_start()
+    local page_end = math.min(cfg.NUM_TRACKS, page_start + self:get_main_overview_track_rows() - 1)
+    for t = page_start, page_end do
       local y = self:track_to_row(t)
       local tr = self:ensure_track_state(t)
       local tc = self.track_cfg[t]
@@ -2887,18 +2947,21 @@ function App:handle_aux_grid_event(x, y, z)
 end
 
 function App:handle_main_grid_event(x, y, z)
+  local mod_row = self:get_main_mod_row()
+  local dyn_row = self:get_main_dynamic_row()
+  local takeover_rows = self:get_main_takeover_note_rows()
   if self.takeover_mode then
-    if y == cfg.MOD_ROW then
+    if y == mod_row then
       self:handle_mod_row(x, z)
       return
     end
 
-    if y == cfg.DYN_ROW and self:is_modifier_dynamic_row_active() then
+    if y == dyn_row and self:is_modifier_dynamic_row_active() and not self:is_main_grid_128() then
       self:handle_dynamic_row(x, z)
       return
     end
 
-    if y >= 1 and y <= 15 then
+    if y >= 1 and y <= takeover_rows then
       local t = self.sel_track or 1
       self.sel_track = t
       local tr = self.tracks[t]
@@ -2954,8 +3017,8 @@ function App:handle_main_grid_event(x, y, z)
             applied_value = (tc.type == "drum") and ("vel " .. tostring(fill_vel)) or ("deg " .. tostring(fill_pitch))
           end
         elseif self:mod_active(cfg.MOD.TEMP) then
-          local degree = clamp(16 - y, 1, 16)
-          local level = clamp(16 - y, 1, 15)
+          local degree = self:main_takeover_row_to_degree(y)
+          local level = self:main_takeover_row_to_vel_level(y)
           local was_off = not tr.gates[x]
           if not tr.gates[x] then
             tr.gates[x] = true
@@ -2983,8 +3046,8 @@ function App:handle_main_grid_event(x, y, z)
           self.spice[t][x] = nil
           applied_value = "clear"
         elseif tc.type == "drum" then
-          local level = clamp(16 - y, 1, 15)
-          if y == cfg.DYN_ROW then
+          local level = self:main_takeover_row_to_vel_level(y)
+          if y == dyn_row and not self:is_main_grid_128() then
             if tr.gates[x] then
               tr.gates[x] = false
             else
@@ -3000,7 +3063,7 @@ function App:handle_main_grid_event(x, y, z)
             end
           end
         else
-          local degree = 16 - y
+          local degree = self:main_takeover_row_to_degree(y)
           if tc.type == "poly" then
             tr.pitches[x] = self:poly_toggle_pitch(self:poly_active_pitches(tr, x), degree)
             tr.gates[x] = (#tr.pitches[x] > 0)
@@ -3017,7 +3080,7 @@ function App:handle_main_grid_event(x, y, z)
       else
         if self.held and self.held.t == t and self.held.s == x then
           local hold_duration = now_ms() - self.held_time
-          if hold_duration < self.HOLD_THRESHOLD and self.held.was_on and self.held.y == cfg.DYN_ROW then tr.gates[x] = false end
+          if hold_duration < self.HOLD_THRESHOLD and self.held.was_on and self.held.y == dyn_row and not self:is_main_grid_128() then tr.gates[x] = false end
         end
         self.held = nil
       end
@@ -3029,12 +3092,12 @@ function App:handle_main_grid_event(x, y, z)
     return
   end
 
-  if y == cfg.MOD_ROW then
+  if y == mod_row then
     self:handle_mod_row(x, z)
     return
   end
 
-  if y == cfg.DYN_ROW then
+  if y == dyn_row then
     self:handle_dynamic_row(x, z)
     return
   end
