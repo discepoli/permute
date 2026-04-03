@@ -44,7 +44,7 @@ function M.setup(app)
   local prev_action_read = params.action_read
   local prev_action_delete = params.action_delete
 
-  params:add_group("permute_seq", "permute", 32)
+  params:add_group("permute_seq", "permute", 33)
 
   params:add_option("permute_scale", "scale", SCALE_NAMES, 2)
   params:set_action("permute_scale", function(v)
@@ -198,6 +198,17 @@ function M.setup(app)
   params:add_option("permute_beat_repeat_mode", "beat repeat mode", BEAT_REPEAT_MODES, 1)
   params:set_action("permute_beat_repeat_mode", function(v)
     app.beat_repeat_mode = BEAT_REPEAT_MODES[v] or BEAT_REPEAT_MODES[1]
+    app:request_redraw()
+  end)
+
+  params:add_option("permute_temp_button_mode", "temp button mode", { "temp", "fill" }, 1)
+  params:set_action("permute_temp_button_mode", function(v)
+    app.temp_button_mode = (v == 2) and "fill" or "temp"
+    app.temp_latched = false
+    app.fill_latched = false
+    app.fill_active = false
+    app.fill_applied = false
+    app.temp_steps = {}
     app:request_redraw()
   end)
 
