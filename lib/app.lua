@@ -2928,8 +2928,13 @@ function App:handle_aux_grid_event(x, y, z)
   self:push_undo_state()
 
   if tc.type == "drum" then
-    tr.gates[x] = true
-    tr.vels[x] = self:aux_row_to_vel_level(y)
+    local next_vel = self:aux_row_to_vel_level(y)
+    if tr.gates[x] and tr.vels[x] == next_vel then
+      tr.gates[x] = false
+    else
+      tr.gates[x] = true
+      tr.vels[x] = next_vel
+    end
   elseif tc.type == "poly" then
     tr.pitches[x] = self:poly_toggle_aux_degree(t, self:poly_active_pitches(tr, x), self:aux_row_to_degree(y))
     tr.gates[x] = (#tr.pitches[x] > 0)
@@ -2937,9 +2942,14 @@ function App:handle_aux_grid_event(x, y, z)
       tr.vels[x] = clamp(tonumber(tr.vels[x]) or cfg.DEFAULT_VEL_LEVEL, 1, 15)
     end
   else
-    tr.gates[x] = true
-    tr.vels[x] = clamp(tonumber(tr.vels[x]) or cfg.DEFAULT_VEL_LEVEL, 1, 15)
-    tr.pitches[x] = self:aux_row_to_degree(y)
+    local next_degree = self:aux_row_to_degree(y)
+    if tr.gates[x] and self:get_closest_aux_degree(t, tr.pitches[x]) == next_degree then
+      tr.gates[x] = false
+    else
+      tr.gates[x] = true
+      tr.vels[x] = clamp(tonumber(tr.vels[x]) or cfg.DEFAULT_VEL_LEVEL, 1, 15)
+      tr.pitches[x] = next_degree
+    end
   end
 
   self:request_arc_redraw()
