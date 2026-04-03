@@ -762,18 +762,19 @@ end
 function App:get_arc_pattern(track)
   local tr = self:ensure_track_state(track)
   local arc_state = self:get_arc_state(track)
-  if not tr or not arc_state then return {}, {}, {} end
+  if not tr or not arc_state then return {}, {}, {}, {} end
 
   local order = self:get_track_step_order(tr)
   local len = #order
   local active = {}
   local positions = {}
-  if len == 0 then return order, active, positions end
+  local phase_positions = {}
+  if len == 0 then return order, active, positions, phase_positions end
 
   local pulses = clamp(arc_state.pulses or 0, 0, len)
   if pulses <= 0 then
     for idx, step in ipairs(order) do positions[step] = idx end
-    return order, active, positions
+    return order, active, positions, phase_positions
   end
 
   local base = {}
@@ -787,10 +788,11 @@ function App:get_arc_pattern(track)
   for idx, step in ipairs(order) do
     local src_idx = self:wrap_arc_index((idx - 1) - rotation, len)
     positions[step] = idx
+    phase_positions[step] = src_idx
     if base[src_idx] then active[step] = true end
   end
 
-  return order, active, positions
+  return order, active, positions, phase_positions
 end
 
 function App:get_arc_random_value(track, pos)
@@ -874,7 +876,7 @@ function App:build_arc_step_cache(track, tr, tc)
   if not tr or not tc then return {} end
 
   local arc_state = self:get_arc_state(track)
-  local order, active, positions = self:get_arc_pattern(track)
+  local order, active, positions, phase_positions = self:get_arc_pattern(track)
   local cache = {}
 
   for s = 1, cfg.NUM_STEPS do
@@ -889,7 +891,7 @@ function App:build_arc_step_cache(track, tr, tc)
 
   for _, step in ipairs(order) do
     if active[step] and not cache[step] then
-      local pos = positions[step] or 1
+      local pos = phase_positions[step] or positions[step] or 1
       local len = #order
       local variance_amount = clamp(tonumber(arc_state.variance) or 0, 0, 100)
       local variance_depth = math.floor((variance_amount / 100) * 7 + 0.5)
