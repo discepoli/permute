@@ -380,9 +380,13 @@ function Icons.draw(mod_id, cx, cy, fg, dim, state)
   elseif mod_id == 7 then
     draw_rand_steps(cx, cy, fg, dim, state)
   elseif mod_id == 8 then
-    draw_temp(cx, cy, fg, dim)
+    if state and state.temp_button_mode == "fill" then
+      draw_fill(cx, cy, fg, dim, state)
+    else
+      draw_temp(cx, cy, fg, dim)
+    end
   elseif mod_id == 9 then
-    draw_fill(cx, cy, fg, dim, state)
+    draw_clock_rate(cx, cy, fg, dim)
   elseif mod_id == 10 then
     draw_shift(cx, cy, fg)
   elseif mod_id == 11 then

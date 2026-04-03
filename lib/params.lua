@@ -44,7 +44,7 @@ function M.setup(app)
   local prev_action_read = params.action_read
   local prev_action_delete = params.action_delete
 
-  params:add_group("permute_seq", "permute", 28)
+  params:add_group("permute_seq", "permute", 33)
 
   params:add_option("permute_scale", "scale", SCALE_NAMES, 2)
   params:set_action("permute_scale", function(v)
@@ -199,6 +199,37 @@ function M.setup(app)
   params:set_action("permute_beat_repeat_mode", function(v)
     app.beat_repeat_mode = BEAT_REPEAT_MODES[v] or BEAT_REPEAT_MODES[1]
     app:request_redraw()
+  end)
+
+  params:add_option("permute_temp_button_mode", "temp button mode", { "temp", "fill" }, 1)
+  params:set_action("permute_temp_button_mode", function(v)
+    app.temp_button_mode = (v == 2) and "fill" or "temp"
+    app.temp_latched = false
+    app.fill_latched = false
+    app.fill_active = false
+    app.fill_applied = false
+    app.temp_steps = {}
+    app:request_redraw()
+  end)
+
+  params:add_number("permute_arc_k1_threshold", "arc k1 threshold", 1, 32, 8)
+  params:set_action("permute_arc_k1_threshold", function(v)
+    app.arc_delta_thresholds[1] = clamp(tonumber(v) or 8, 1, 32)
+  end)
+
+  params:add_number("permute_arc_k2_threshold", "arc k2 threshold", 1, 32, 12)
+  params:set_action("permute_arc_k2_threshold", function(v)
+    app.arc_delta_thresholds[2] = clamp(tonumber(v) or 12, 1, 32)
+  end)
+
+  params:add_number("permute_arc_k3_threshold", "arc k3 threshold", 1, 32, 2)
+  params:set_action("permute_arc_k3_threshold", function(v)
+    app.arc_delta_thresholds[3] = clamp(tonumber(v) or 2, 1, 32)
+  end)
+
+  params:add_number("permute_arc_k4_threshold", "arc k4 threshold", 1, 32, 16)
+  params:set_action("permute_arc_k4_threshold", function(v)
+    app.arc_delta_thresholds[4] = clamp(tonumber(v) or 16, 1, 32)
   end)
 
   params:add_trigger("permute_panic", "panic")

@@ -46,6 +46,7 @@ M.MOD = {
   RAND_NOTES = 6,
   RAND_STEPS = 7,
   TEMP = 8,
+  RATIOS = 9,
   FILL = 9,
   SHIFT = 10,
   OCTAVE = 11,

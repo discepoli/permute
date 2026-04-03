@@ -43,6 +43,31 @@ local SCALE_DEGREE_INDICES = {
   lightbath = { 1, 2, 3, 4 }
 }
 
+local ARC_VARIANCE_MODES = {
+  "triangle",
+  "ramp down",
+  "ramp up",
+  "random",
+  "cadence 1",
+  "cadence 2",
+  "cadence 3",
+  "cadence 4"
+}
+
+local ARC_CADENCE_SHAPES = {
+  { -1, -0.33, 0.33, 1 },
+  { -1, -0.66, -0.33, 1 },
+  { -0.66, 0.33, 0.66, -1, -0.66, 0.33 },
+  { -0.33, 0.33, 0.33, -1, -0.66, -0.33 }
+}
+
+local ARC_DELTA_THRESHOLDS = {
+  [1] = 8,
+  [2] = 12,
+  [3] = 2,
+  [4] = 16
+}
+
 function App.new()
   local self = setmetatable({}, App)
 
@@ -79,14 +104,16 @@ function App.new()
   self.track_clock_div = {}
   self.track_clock_mult = {}
   self.track_clock_phase = {}
+  self.track_loop_count = {}
 
   self.mod_held = {}
   self.mod_last_tap_time = {}
   self.mod_shortcut_consumed = {}
-  self.sel_track = nil
+  self.sel_track = 1
   self.temp_steps = {}
   self.temp_latched = false
   self.fill_latched = false
+  self.temp_button_mode = "temp"
   self.mod_double_tap_ms = 250
   self.takeover_mode = false
   self.beat_repeat_len = 0
@@ -95,7 +122,10 @@ function App.new()
   self.speed_mode = false
   self.save_slots = {}
   self.fill_patterns = {}
+  self.ratios = {}
   self.fill_active = false
+  self.ratio_pending_cycle = 4
+  self.ratio_pending_position = 1
   self.spice = {}
   self.spice_pending_amount = nil
   self.spice_accum_min = cfg.SPICE_MIN
@@ -127,8 +157,13 @@ function App.new()
 
   self.screen_dirty = true
   self.grid_dirty = true
+  self.arc_dirty = true
   self.grid_timer = nil
   self.internal_clock_id = nil
+  self.arc_dev = nil
+  self.arc_delta_accum = { 0, 0, 0, 0 }
+  self.arc_delta_thresholds = deep_copy_table(ARC_DELTA_THRESHOLDS)
+  self.arc_last_history_at = 0
 
   self.grid_dev = nil
   self.main_grid_dev = nil
@@ -155,7 +190,13 @@ function App.new()
       solo = false,
       start_step = 1,
       end_step = cfg.NUM_STEPS,
-      octave = 0
+      octave = 0,
+      arc = {
+        pulses = 0,
+        rotation = 1,
+        variance = 0,
+        mode = 1
+      }
     }
     for s = 1, cfg.NUM_STEPS do
       self.tracks[t].gates[s] = false
@@ -171,7 +212,9 @@ function App.new()
     self.track_clock_div[t] = 1
     self.track_clock_mult[t] = 1
     self.track_clock_phase[t] = 0
+    self.track_loop_count[t] = 1
     self.fill_patterns[t] = {}
+    self.ratios[t] = {}
     self.spice[t] = {}
     self.track_transpose[t] = 0
     self.track_gate_ticks[t] = (self.track_cfg[t].type == "drum") and self.drum_gate_clocks or self.melody_gate_clocks
@@ -219,7 +262,12 @@ function App:default_setup_param_ids()
     "permute_crow_track_1",
     "permute_crow_track_2",
     "permute_redraw_fps",
-    "permute_beat_repeat_mode"
+    "permute_beat_repeat_mode",
+    "permute_temp_button_mode",
+    "permute_arc_k1_threshold",
+    "permute_arc_k2_threshold",
+    "permute_arc_k3_threshold",
+    "permute_arc_k4_threshold"
   }
 
   for t = 1, cfg.NUM_TRACKS do
@@ -473,6 +521,7 @@ function App:export_state()
     track_transpose = deep_copy_table(self.track_transpose),
     track_gate_ticks = deep_copy_table(self.track_gate_ticks),
     fill_patterns = deep_copy_table(self.fill_patterns),
+    ratios = deep_copy_table(self.ratios),
     spice = deep_copy_table(self.spice),
     save_slots = deep_copy_table(self.save_slots),
     beat_repeat_len = self.beat_repeat_len,
@@ -508,6 +557,7 @@ function App:import_state(state)
   if type(state.track_transpose) == "table" then self.track_transpose = deep_copy_table(state.track_transpose) end
   if type(state.track_gate_ticks) == "table" then self.track_gate_ticks = deep_copy_table(state.track_gate_ticks) end
   if type(state.fill_patterns) == "table" then self.fill_patterns = deep_copy_table(state.fill_patterns) end
+  if type(state.ratios) == "table" then self.ratios = deep_copy_table(state.ratios) end
   if type(state.spice) == "table" then self.spice = deep_copy_table(state.spice) end
   if type(state.save_slots) == "table" then self.save_slots = deep_copy_table(state.save_slots) end
   if type(state.beat_repeat_excluded) == "table" then self.beat_repeat_excluded = deep_copy_table(state.beat_repeat_excluded) end
@@ -549,7 +599,9 @@ function App:import_state(state)
     end
     self.track_gate_ticks[t] = clamp(tonumber(self.track_gate_ticks[t]) or 1, 1, 24)
     if not self.fill_patterns[t] then self.fill_patterns[t] = {} end
+    if not self.ratios[t] then self.ratios[t] = {} end
     if not self.spice[t] then self.spice[t] = {} end
+    if not self.track_loop_count[t] then self.track_loop_count[t] = 1 end
     self:ensure_track_state(t)
   end
 
@@ -650,6 +702,7 @@ function App:reset_playheads()
   for t = 1, cfg.NUM_TRACKS do
     self.track_steps[t] = 1
     self.track_clock_phase[t] = 0
+    self.track_loop_count[t] = 1
   end
   self:request_redraw()
 end
@@ -661,6 +714,271 @@ function App:get_track_bounds(tr)
   return lo, hi, reverse
 end
 
+function App:get_track_step_order(tr)
+  local lo, hi, reverse = self:get_track_bounds(tr)
+  local steps = {}
+  if reverse then
+    for s = hi, lo, -1 do
+      steps[#steps + 1] = s
+    end
+  else
+    for s = lo, hi do
+      steps[#steps + 1] = s
+    end
+  end
+  return steps
+end
+
+function App:normalize_arc_mode(mode)
+  return clamp(tonumber(mode) or 1, 1, #ARC_VARIANCE_MODES)
+end
+
+function App:get_arc_mode_name(mode)
+  return ARC_VARIANCE_MODES[self:normalize_arc_mode(mode)]
+end
+
+function App:get_arc_state(track)
+  local tr = self:ensure_track_state(track)
+  if not tr then return nil end
+  if type(tr.arc) ~= "table" then tr.arc = {} end
+  tr.arc.pulses = clamp(tonumber(tr.arc.pulses) or 0, 0, cfg.NUM_STEPS)
+  tr.arc.rotation = math.floor(tonumber(tr.arc.rotation) or 1)
+  tr.arc.variance = clamp(tonumber(tr.arc.variance) or 0, 0, 100)
+  tr.arc.mode = self:normalize_arc_mode(tr.arc.mode)
+  return tr.arc
+end
+
+function App:wrap_arc_index(v, len)
+  if len <= 0 then return 1 end
+  local idx = v % len
+  if idx < 0 then idx = idx + len end
+  return idx + 1
+end
+
+function App:is_beat_column(step)
+  return step == 1 or step == 5 or step == 9 or step == 13
+end
+
+function App:get_arc_pattern(track)
+  local tr = self:ensure_track_state(track)
+  local arc_state = self:get_arc_state(track)
+  if not tr or not arc_state then return {}, {}, {}, {} end
+
+  local order = self:get_track_step_order(tr)
+  local len = #order
+  local active = {}
+  local positions = {}
+  local phase_positions = {}
+  if len == 0 then return order, active, positions, phase_positions end
+
+  local pulses = clamp(arc_state.pulses or 0, 0, len)
+  if pulses <= 0 then
+    for idx, step in ipairs(order) do positions[step] = idx end
+    return order, active, positions, phase_positions
+  end
+
+  local base = {}
+  for idx = 1, len do
+    local prev = math.floor((((idx - 1) * pulses) - 1) / len)
+    local curr = math.floor(((idx * pulses) - 1) / len)
+    base[idx] = (curr > prev)
+  end
+
+  local rotation = (arc_state.rotation or 1) - 1
+  for idx, step in ipairs(order) do
+    local src_idx = self:wrap_arc_index((idx - 1) - rotation, len)
+    positions[step] = idx
+    phase_positions[step] = src_idx
+    if base[src_idx] then active[step] = true end
+  end
+
+  return order, active, positions, phase_positions
+end
+
+function App:get_arc_random_value(track, pos)
+  local x = math.sin((track * 131) + (pos * 17.17)) * 43758.5453
+  return (x - math.floor(x)) * 2 - 1
+end
+
+function App:sample_arc_shape(shape, pos, len)
+  if type(shape) ~= "table" or #shape == 0 then return 0 end
+  if #shape == 1 or len <= 1 then return clamp(tonumber(shape[1]) or 0, -1, 1) end
+
+  local t = (pos - 1) / math.max(1, len - 1)
+  local scaled = t * (#shape - 1)
+  local idx = math.floor(scaled) + 1
+  local frac = scaled - math.floor(scaled)
+  local a = clamp(tonumber(shape[idx]) or 0, -1, 1)
+  local b = clamp(tonumber(shape[math.min(#shape, idx + 1)]) or a, -1, 1)
+  return a + ((b - a) * frac)
+end
+
+function App:get_arc_wave_value(track, pos, len, mode)
+  if len <= 1 then return 0 end
+
+  local name = self:get_arc_mode_name(mode)
+  local t = (pos - 1) / math.max(1, len - 1)
+
+  if name == "triangle" then
+    return 1 - (math.abs((t * 2) - 1) * 2)
+  elseif name == "ramp down" then
+    return 1 - (t * 2)
+  elseif name == "ramp up" then
+    return (t * 2) - 1
+  elseif name == "random" then
+    return self:get_arc_random_value(track, pos)
+  elseif name == "cadence 1" then
+    return self:sample_arc_shape(ARC_CADENCE_SHAPES[1], pos, len)
+  elseif name == "cadence 2" then
+    return self:sample_arc_shape(ARC_CADENCE_SHAPES[2], pos, len)
+  elseif name == "cadence 3" then
+    return self:sample_arc_shape(ARC_CADENCE_SHAPES[3], pos, len)
+  elseif name == "cadence 4" then
+    return self:sample_arc_shape(ARC_CADENCE_SHAPES[4], pos, len)
+  end
+
+  return 0
+end
+
+function App:get_arc_reference_step(track, order, step, tr)
+  tr = tr or self:ensure_track_state(track)
+  if not tr then return nil end
+
+  local index_of = {}
+  for idx, ordered_step in ipairs(order) do
+    index_of[ordered_step] = idx
+  end
+
+  local target_idx = index_of[step] or 1
+  local len = #order
+  for distance = 0, len - 1 do
+    local left = target_idx - distance
+    if left >= 1 then
+      local candidate = order[left]
+      if tr.gates[candidate] then return candidate end
+    end
+
+    if distance > 0 then
+      local right = target_idx + distance
+      if right <= len then
+        local candidate = order[right]
+        if tr.gates[candidate] then return candidate end
+      end
+    end
+  end
+
+  return nil
+end
+
+function App:build_arc_step_cache(track, tr, tc)
+  tr = tr or self:ensure_track_state(track)
+  tc = tc or self.track_cfg[track]
+  if not tr or not tc then return {} end
+
+  local arc_state = self:get_arc_state(track)
+  local order, active, positions, phase_positions = self:get_arc_pattern(track)
+  local cache = {}
+
+  for s = 1, cfg.NUM_STEPS do
+    if tr.gates[s] then
+      cache[s] = {
+        source = "manual",
+        vel = tr.vels[s],
+        pitch = tr.pitches[s]
+      }
+    end
+  end
+
+  for _, step in ipairs(order) do
+    if active[step] and not cache[step] then
+      local pos = phase_positions[step] or positions[step] or 1
+      local len = #order
+      local variance_amount = clamp(tonumber(arc_state.variance) or 0, 0, 100)
+      local variance_depth = math.floor((variance_amount / 100) * 7 + 0.5)
+      local wave = self:get_arc_wave_value(track, pos, len, arc_state.mode)
+      local shift = math.floor((wave * variance_depth) + ((wave >= 0) and 0.5 or -0.5))
+      local ref_step = self:get_arc_reference_step(track, order, step, tr)
+
+      if tc.type == "drum" then
+        local base_vel = ref_step and tr.vels[ref_step] or cfg.DEFAULT_VEL_LEVEL
+        cache[step] = {
+          source = "arc",
+          vel = clamp(base_vel + shift, 1, 15)
+        }
+      elseif tc.type == "poly" then
+        local base_pitch = ref_step and tr.pitches[ref_step] or { 1 }
+        local chord = {}
+        if type(base_pitch) == "table" then
+          for i, degree in ipairs(base_pitch) do
+            chord[i] = clamp((tonumber(degree) or 1) + shift, 1, 16)
+          end
+        else
+          chord[1] = clamp((tonumber(base_pitch) or 1) + shift, 1, 16)
+        end
+        if #chord == 0 then chord[1] = 1 end
+        cache[step] = {
+          source = "arc",
+          vel = ref_step and tr.vels[ref_step] or cfg.DEFAULT_VEL_LEVEL,
+          pitch = chord
+        }
+      else
+        local base_degree = ref_step and tr.pitches[ref_step] or 1
+        cache[step] = {
+          source = "arc",
+          vel = ref_step and tr.vels[ref_step] or cfg.DEFAULT_VEL_LEVEL,
+          pitch = clamp((tonumber(base_degree) or 1) + shift, 1, 16)
+        }
+      end
+    end
+  end
+
+  return cache
+end
+
+function App:get_arc_step_data(track, step)
+  return self:build_arc_step_cache(track)[step]
+end
+
+function App:is_temp_button_fill_mode()
+  return self.temp_button_mode == "fill"
+end
+
+function App:get_temp_button_label()
+  return self:is_temp_button_fill_mode() and "fill" or "temp"
+end
+
+function App:get_ratio_label()
+  return tostring(clamp(tonumber(self.ratio_pending_position) or 1, 1, self.ratio_pending_cycle or 1))
+    .. "/" .. tostring(self.ratio_pending_cycle or 1)
+end
+
+function App:set_ratio_cycle(cycle)
+  self.ratio_pending_cycle = clamp(tonumber(cycle) or 1, 1, 8)
+  self.ratio_pending_position = clamp(tonumber(self.ratio_pending_position) or 1, 1, self.ratio_pending_cycle)
+end
+
+function App:set_ratio_position(pos)
+  self.ratio_pending_position = clamp(tonumber(pos) or 1, 1, self.ratio_pending_cycle or 1)
+end
+
+function App:apply_pending_ratio_to_step(track, step)
+  if not self.ratios[track] then self.ratios[track] = {} end
+
+  self.ratios[track][step] = {
+    cycle = self.ratio_pending_cycle,
+    position = clamp(tonumber(self.ratio_pending_position) or 1, 1, self.ratio_pending_cycle or 1)
+  }
+  return self:get_ratio_label()
+end
+
+function App:step_ratio_allows_play(track, step)
+  local data = self.ratios[track] and self.ratios[track][step]
+  if type(data) ~= "table" then return true end
+  local cycle = clamp(tonumber(data.cycle) or 1, 1, 8)
+  local loop_index = ((clamp(tonumber(self.track_loop_count[track]) or 1, 1, 999999) - 1) % cycle) + 1
+  return loop_index == clamp(tonumber(data.position) or 1, 1, cycle)
+end
+
 function App:mod_name(id)
   if id == 5 then return "track select" end
   if id == cfg.MOD.MUTE then return "mute" end
@@ -669,8 +987,8 @@ function App:mod_name(id)
   if id == cfg.MOD.END_STEP then return "end" end
   if id == cfg.MOD.RAND_NOTES then return "rand notes" end
   if id == cfg.MOD.RAND_STEPS then return "rand steps" end
-  if id == cfg.MOD.TEMP then return "temp" end
-  if id == cfg.MOD.FILL then return "fill" end
+  if id == cfg.MOD.TEMP then return self:get_temp_button_label() end
+  if id == cfg.MOD.RATIOS then return "ratios" end
   if id == cfg.MOD.SHIFT then return "shift" end
   if id == cfg.MOD.OCTAVE then return "octave" end
   if id == cfg.MOD.TRANSPOSE then return "transpose" end
@@ -685,19 +1003,26 @@ function App:get_active_mod_id()
   if self.last_mod_pressed and self.mod_held[self.last_mod_pressed] then
     return self.last_mod_pressed
   end
-  if self.last_mod_pressed == cfg.MOD.TEMP and self.temp_latched then return cfg.MOD.TEMP end
-  if self.last_mod_pressed == cfg.MOD.FILL and self.fill_latched then return cfg.MOD.FILL end
+  if self.last_mod_pressed == cfg.MOD.TEMP then
+    if self:is_temp_button_fill_mode() and self.fill_latched then return cfg.MOD.TEMP end
+    if not self:is_temp_button_fill_mode() and self.temp_latched then return cfg.MOD.TEMP end
+  end
   for k, v in pairs(self.mod_held) do
     if v then return k end
   end
-  if self.temp_latched then return cfg.MOD.TEMP end
-  if self.fill_latched then return cfg.MOD.FILL end
+  if self:is_temp_button_fill_mode() then
+    if self.fill_latched then return cfg.MOD.TEMP end
+  elseif self.temp_latched then
+    return cfg.MOD.TEMP
+  end
   return nil
 end
 
 function App:mod_active(mod)
-  if mod == cfg.MOD.TEMP then return self.mod_held[mod] or self.temp_latched end
-  if mod == cfg.MOD.FILL then return self.mod_held[mod] or self.fill_latched end
+  if mod == cfg.MOD.TEMP then
+    if self:is_temp_button_fill_mode() then return self.mod_held[mod] or self.fill_latched end
+    return self.mod_held[mod] or self.temp_latched
+  end
   return self.mod_held[mod]
 end
 
@@ -766,6 +1091,8 @@ function App:get_active_mod_value(mod_id)
     return tostring(self.beat_repeat_len or 0)
   elseif mod_id == cfg.MOD.SPICE then
     return tostring(self.spice_pending_amount or 0)
+  elseif mod_id == cfg.MOD.RATIOS then
+    return self:get_ratio_label()
   elseif mod_id == cfg.MOD.START and self.sel_track then
     return tostring(self.tracks[self.sel_track].start_step)
   elseif mod_id == cfg.MOD.END_STEP and self.sel_track then
@@ -826,7 +1153,8 @@ function App:mod_id_from_name(name)
   if name == "rand notes" then return cfg.MOD.RAND_NOTES end
   if name == "rand steps" then return cfg.MOD.RAND_STEPS end
   if name == "temp" then return cfg.MOD.TEMP end
-  if name == "fill" then return cfg.MOD.FILL end
+  if name == "fill" then return cfg.MOD.TEMP end
+  if name == "ratios" then return cfg.MOD.RATIOS end
   if name == "shift" then return cfg.MOD.SHIFT end
   if name == "octave" then return cfg.MOD.OCTAVE end
   if name == "transpose" then return cfg.MOD.TRANSPOSE end
@@ -842,7 +1170,8 @@ function App:mod_icon_state()
     track_selected = self.sel_track ~= nil,
     rand_notes_rolled = self.rand_notes_rolled,
     rand_steps_shuffled = self.rand_steps_shuffled,
-    fill_applied = self.fill_applied
+    fill_applied = self.fill_applied,
+    temp_button_mode = self.temp_button_mode
   }
 end
 
@@ -936,8 +1265,8 @@ function App:is_modifier_dynamic_row_active()
   if self.mod_held[cfg.MOD.RAND_NOTES] or self.mod_held[cfg.MOD.RAND_STEPS] then return true end
   if self.mod_held[cfg.MOD.BEAT_RPT] then return true end
   if self.mod_held[cfg.MOD.SPICE] then return true end
-  if self.mod_held[cfg.MOD.SHIFT] and self:mod_active(cfg.MOD.FILL) then return true end
-  if self.mod_held[cfg.MOD.SHIFT] and self:mod_active(cfg.MOD.TEMP) then return true end
+  if self.mod_held[cfg.MOD.RATIOS] then return true end
+  if self.mod_held[cfg.MOD.SHIFT] and self.mod_held[cfg.MOD.RATIOS] then return true end
   if self.speed_mode then return true end
   return false
 end
@@ -972,19 +1301,19 @@ function App:handle_mod_row(x, z)
       return
     end
 
-    if x == cfg.MOD.TEMP or x == cfg.MOD.FILL then
+    if x == cfg.MOD.TEMP then
       local now = now_ms()
-      local is_temp = (x == cfg.MOD.TEMP)
-      local latched = is_temp and self.temp_latched or self.fill_latched
+      local use_fill = self:is_temp_button_fill_mode()
+      local latched = use_fill and self.fill_latched or self.temp_latched
 
       if latched then
-        if is_temp then
-          self.temp_latched = false
-          self:clear_temp_steps()
-        else
+        if use_fill then
           self.fill_latched = false
           self.fill_active = false
           self.fill_applied = false
+        else
+          self.temp_latched = false
+          self:clear_temp_steps()
         end
         self.mod_held[x] = nil
         self.last_mod_pressed = x
@@ -995,13 +1324,13 @@ function App:handle_mod_row(x, z)
 
       local last_tap = self.mod_last_tap_time[x] or 0
       if now - last_tap <= self.mod_double_tap_ms then
-        if is_temp then
-          self.temp_latched = true
-          self.temp_steps = {}
-        else
+        if use_fill then
           self.fill_latched = true
           self.fill_active = true
           self.fill_applied = true
+        else
+          self.temp_latched = true
+          self.temp_steps = {}
         end
         self.mod_held[x] = nil
         self.mod_last_tap_time[x] = 0
@@ -1031,25 +1360,25 @@ function App:handle_mod_row(x, z)
     if x == cfg.MOD.RAND_NOTES then self.rand_notes_rolled = false end
     if x == cfg.MOD.RAND_STEPS then self.rand_steps_shuffled = false end
     if (x == cfg.MOD.START and self.mod_held[cfg.MOD.END_STEP]) or (x == cfg.MOD.END_STEP and self.mod_held[cfg.MOD.START]) then self.speed_mode = true end
-    if x == cfg.MOD.FILL then
+    if x == cfg.MOD.TEMP and self:is_temp_button_fill_mode() then
       self.fill_active = true
       self.fill_applied = true
     end
     if x == cfg.MOD.TAKEOVER and self.sel_track then self.takeover_mode = true end
   else
-    if x == cfg.MOD.TEMP and self.temp_latched then
+    if x == cfg.MOD.TEMP and not self:is_temp_button_fill_mode() and self.temp_latched then
       self:request_redraw()
       return
     end
-    if x == cfg.MOD.FILL and self.fill_latched then
+    if x == cfg.MOD.TEMP and self:is_temp_button_fill_mode() and self.fill_latched then
       self:request_redraw()
       return
     end
 
     self.mod_held[x] = nil
-    if x == cfg.MOD.TEMP then self:clear_temp_steps() end
+    if x == cfg.MOD.TEMP and not self:is_temp_button_fill_mode() then self:clear_temp_steps() end
     if x == cfg.MOD.START or x == cfg.MOD.END_STEP then self.speed_mode = false end
-    if x == cfg.MOD.FILL then
+    if x == cfg.MOD.TEMP and self:is_temp_button_fill_mode() then
       self.fill_active = false
       self.fill_applied = self.fill_latched
     end
@@ -1066,12 +1395,21 @@ function App:handle_dynamic_row(x, z)
     local applied_value = nil
     local applied_mod = self:get_active_mod_id()
 
-    if self.mod_held[cfg.MOD.SHIFT] and self:mod_active(cfg.MOD.FILL) and x <= 4 then
-      self:save_to_slot(x)
-      applied_value = "slot " .. tostring(x)
-    elseif self.mod_held[cfg.MOD.SHIFT] and self:mod_active(cfg.MOD.TEMP) and x <= 4 then
-      self:load_from_slot(x)
-      applied_value = "slot " .. tostring(x)
+    if self.mod_held[cfg.MOD.SHIFT] and self.mod_held[cfg.MOD.RATIOS] then
+      if x <= 4 then
+        self:save_to_slot(x)
+        applied_value = "save " .. tostring(x)
+      elseif x >= 13 then
+        self:load_from_slot(x - 12)
+        applied_value = "load " .. tostring(x - 12)
+      end
+    elseif self.mod_held[cfg.MOD.RATIOS] then
+      if x <= 8 then
+        self:set_ratio_position(x)
+      else
+        self:set_ratio_cycle(x - 8)
+      end
+      applied_value = self:get_ratio_label()
     elseif self.mod_held[cfg.MOD.OCTAVE] and self.sel_track then
       self.tracks[self.sel_track].octave = x - 8
       applied_value = tostring(self.tracks[self.sel_track].octave)
@@ -1138,13 +1476,67 @@ function App:handle_dynamic_row(x, z)
   self:request_redraw()
 end
 
+function App:is_main_grid_128()
+  local dev = self.main_grid_dev
+  local device = dev and dev.device
+  return device and device.cols == 16 and device.rows == 8 or false
+end
+
+function App:get_main_mod_row()
+  return self:is_main_grid_128() and 8 or cfg.MOD_ROW
+end
+
+function App:get_main_dynamic_row()
+  return self:is_main_grid_128() and 7 or cfg.DYN_ROW
+end
+
+function App:get_main_overview_track_rows()
+  return self:get_main_dynamic_row() - 1
+end
+
+function App:get_main_takeover_note_rows()
+  return self:get_main_mod_row() - 1
+end
+
+function App:get_main_track_page_start()
+  if not self:is_main_grid_128() then return 1 end
+  local page_size = self:get_main_overview_track_rows()
+  local selected = clamp(tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+  local start = math.floor((selected - 1) / page_size) * page_size + 1
+  return clamp(start, 1, math.max(1, cfg.NUM_TRACKS - page_size + 1))
+end
+
 function App:row_to_track(y)
-  if y >= 1 and y <= cfg.NUM_TRACKS then return 15 - y end
-  return nil
+  local visible_rows = self:get_main_overview_track_rows()
+  if y < 1 or y > visible_rows then return nil end
+  return self:get_main_track_page_start() + (visible_rows - y)
 end
 
 function App:track_to_row(t)
-  return 15 - t
+  local visible_rows = self:get_main_overview_track_rows()
+  local page_start = self:get_main_track_page_start()
+  local page_end = math.min(cfg.NUM_TRACKS, page_start + visible_rows - 1)
+  if t < page_start or t > page_end then return nil end
+  return visible_rows - (t - page_start)
+end
+
+function App:main_takeover_row_to_degree(y)
+  local rows = self:get_main_takeover_note_rows()
+  return clamp(rows - y + 1, 1, rows)
+end
+
+function App:main_takeover_row_to_vel_level(y)
+  local rows = self:get_main_takeover_note_rows()
+  if rows <= 1 then return cfg.DEFAULT_VEL_LEVEL end
+  local ratio = (rows - clamp(y, 1, rows)) / (rows - 1)
+  return clamp(math.floor((ratio * 14) + 1 + 0.5), 1, 15)
+end
+
+function App:vel_level_to_main_takeover_row(level)
+  local rows = self:get_main_takeover_note_rows()
+  if rows <= 1 then return 1 end
+  local stored = clamp(tonumber(level) or cfg.DEFAULT_VEL_LEVEL, 1, 15)
+  return clamp(rows - math.floor(((stored - 1) * (rows - 1)) / 14 + 0.5), 1, rows)
 end
 
 function App:vel_to_midi(level)
@@ -1191,15 +1583,19 @@ function App:refresh_grid_assignments()
   if #connected == 1 then
     main = connected[1]
   elseif #connected > 1 then
-    for _, dev in ipairs(connected) do
-      if not self:is_aux_grid_device(dev) then
-        main = dev
-        break
-      end
-    end
-
-    if not main then
+    if self:is_aux_grid_device(connected[1]) then
       main = connected[1]
+    else
+      for _, dev in ipairs(connected) do
+        if not self:is_aux_grid_device(dev) then
+          main = dev
+          break
+        end
+      end
+
+      if not main then
+        main = connected[1]
+      end
     end
 
     for _, dev in ipairs(connected) do
@@ -1345,8 +1741,15 @@ function App:ensure_track_state(t)
   if not tr.gates then tr.gates = {} end
   if not tr.vels then tr.vels = {} end
   if not tr.pitches then tr.pitches = {} end
+  if type(tr.arc) ~= "table" then tr.arc = {} end
+  tr.arc.pulses = clamp(tonumber(tr.arc.pulses) or 0, 0, cfg.NUM_STEPS)
+  tr.arc.rotation = math.floor(tonumber(tr.arc.rotation) or 1)
+  tr.arc.variance = clamp(tonumber(tr.arc.variance) or 0, 0, 100)
+  tr.arc.mode = self:normalize_arc_mode(tr.arc.mode)
+  if not self.ratios[t] then self.ratios[t] = {} end
   if not self.spice[t] then self.spice[t] = {} end
   if not self.track_steps[t] then self.track_steps[t] = 1 end
+  if not self.track_loop_count[t] then self.track_loop_count[t] = 1 end
   self.track_clock_mult[t] = clamp(tonumber(self.track_clock_mult[t]) or 1, 1, 8)
   self.track_clock_div[t] = clamp(tonumber(self.track_clock_div[t]) or 1, 1, 16)
   if self.track_clock_phase[t] == nil then self.track_clock_phase[t] = 0 end
@@ -1532,6 +1935,8 @@ function App:play_tracks(pulse_scale)
   for t = 1, cfg.NUM_TRACKS do
     local tr = self:ensure_track_state(t)
     local tc = self.track_cfg[t]
+    local step_cache = self:build_arc_step_cache(t, tr, tc)
+    local len = math.abs((tonumber(tr.end_step) or cfg.NUM_STEPS) - (tonumber(tr.start_step) or 1)) + 1
     local mult = self.track_clock_mult[t]
     local div = self.track_clock_div[t]
     local ratio = (mult / div) * scale
@@ -1545,7 +1950,9 @@ function App:play_tracks(pulse_scale)
       local st = self:get_track_step(t)
       local gate_ticks = clamp(tonumber(self.track_gate_ticks[t]) or ((tc.type == "drum") and self.drum_gate_clocks or self.melody_gate_clocks), 1, 24)
       local has_fill = self.fill_active and self.fill_patterns[t][st]
-      local should_play = tr.gates[st] or has_fill
+      local step_data = step_cache[st]
+      local ratio_allows = step_data and self:step_ratio_allows_play(t, st)
+      local should_play = (step_data and ratio_allows) or has_fill
 
       if self.last_notes[t] then
         self:note_off_last_for_track(t)
@@ -1554,7 +1961,7 @@ function App:play_tracks(pulse_scale)
       if not tr.muted and should_play then
         local output_ports = self:capture_midi_ports()
         local vel
-        if has_fill and not tr.gates[st] then
+        if has_fill and not step_data then
           vel = self.fill_patterns[t][st].vel
           if tc.type == "drum" then
             local note = clamp(tc.note, 0, 127)
@@ -1570,7 +1977,7 @@ function App:play_tracks(pulse_scale)
             self.last_notes[t] = { note = note, ch = tc.ch, ports = output_ports }
           end
         else
-          vel = tr.vels[st]
+          vel = step_data.vel
           if tc.type == "drum" then
             local note = clamp(tc.note, 0, 127)
             self:midi_note_on(note, self:vel_to_midi(vel), tc.ch, output_ports)
@@ -1582,7 +1989,7 @@ function App:play_tracks(pulse_scale)
             local spice_offset = sp and sp.current or 0
             local notes = {}
             local chord = {}
-            for _, d in ipairs(tr.pitches[st]) do
+            for _, d in ipairs(step_data.pitch or {}) do
               chord[#chord + 1] = self:get_pitch(t, d, spice_offset)
             end
             for _, note in ipairs(chord) do
@@ -1597,7 +2004,7 @@ function App:play_tracks(pulse_scale)
           else
             local sp = self.spice[t] and self.spice[t][st]
             local spice_offset = sp and sp.current or 0
-            local note = self:get_pitch(t, tr.pitches[st], spice_offset)
+            local note = self:get_pitch(t, step_data.pitch, spice_offset)
             self:midi_note_on(note, self:vel_to_midi(vel), tc.ch, output_ports)
             self:trigger_crow(t, note)
             self:schedule_note_off(t, note, tc.ch, gate_ticks, output_ports)
@@ -1606,7 +2013,11 @@ function App:play_tracks(pulse_scale)
         end
       end
 
-      self.track_steps[t] = self.track_steps[t] + 1
+      local ts = tonumber(self.track_steps[t]) or 1
+      if len > 0 and ts % len == 0 then
+        self.track_loop_count[t] = (tonumber(self.track_loop_count[t]) or 1) + 1
+      end
+      self.track_steps[t] = ts + 1
 
       local sp = self.spice[t] and self.spice[t][st]
       if sp and sp.amount ~= 0 then
@@ -1648,6 +2059,7 @@ end
 function App:reset_tracks_to_start_positions()
   for t = 1, cfg.NUM_TRACKS do
     self.track_steps[t] = 1
+    self.track_loop_count[t] = 1
   end
   self.step = 1
   self.beat_repeat_start = 0
@@ -1755,12 +2167,13 @@ end
 
 function App:save_to_slot(slot)
   if slot < 1 or slot > 4 then return end
-  local snap = { g = {}, p = {} }
+  local snap = { g = {}, p = {}, r = {} }
   for t = 1, cfg.NUM_TRACKS do
     local tr = self:ensure_track_state(t)
     local tc = self.track_cfg[t]
     snap.g[t] = {}
     snap.p[t] = {}
+    snap.r[t] = {}
     for s = 1, cfg.NUM_STEPS do
       if tr.gates[s] then
         snap.g[t][s] = 1
@@ -1771,6 +2184,9 @@ function App:save_to_slot(slot)
         else
           snap.p[t][s] = tr.pitches[s]
         end
+      end
+      if self.ratios[t] and self.ratios[t][s] then
+        snap.r[t][s] = deep_copy_table(self.ratios[t][s])
       end
     end
   end
@@ -1783,12 +2199,14 @@ function App:load_from_slot(slot)
   for t = 1, cfg.NUM_TRACKS do
     local tr = self:ensure_track_state(t)
     local tc = self.track_cfg[t]
+    self.ratios[t] = {}
     for s = 1, cfg.NUM_STEPS do
       tr.gates[s] = false
       if tc.type == "poly" then tr.pitches[s] = { 1 } else tr.pitches[s] = 1 end
     end
     local sg = snap.g[t] or {}
     local sp = snap.p[t] or {}
+    local sr = snap.r[t] or {}
     for s = 1, cfg.NUM_STEPS do
       if sg[s] then
         tr.gates[s] = true
@@ -1803,6 +2221,7 @@ function App:load_from_slot(slot)
           tr.pitches[s] = clamp(tonumber(sp[s]) or 1, 1, 16)
         end
       end
+      if sr[s] then self.ratios[t][s] = deep_copy_table(sr[s]) end
     end
   end
 end
@@ -1839,7 +2258,10 @@ function App:clear_track(t)
     if self.track_cfg[t].type == "poly" then self.tracks[t].pitches[s] = { 1 } else self.tracks[t].pitches[s] = 1 end
     self.tracks[t].vels[s] = cfg.DEFAULT_VEL_LEVEL
   end
+  self.fill_patterns[t] = {}
+  self.ratios[t] = {}
   self.spice[t] = {}
+  self.tracks[t].arc = { pulses = 0, rotation = 1, variance = 0, mode = 1 }
 end
 
 function App:clear_all_tracks()
@@ -1862,8 +2284,10 @@ function App:clear_modifier_for_track(mod, t)
     self.key_transpose = 0
   elseif mod == cfg.MOD.SPICE then
     self.spice[t] = {}
-  elseif mod == cfg.MOD.FILL then
+  elseif mod == cfg.MOD.TEMP and self:is_temp_button_fill_mode() then
     self.fill_patterns[t] = {}
+  elseif mod == cfg.MOD.RATIOS then
+    self.ratios[t] = {}
   end
 end
 
@@ -1874,11 +2298,12 @@ function App:clear_modifier_all_tracks(mod)
 end
 
 function App:draw_dynamic_row()
+  local dyn_row = self:get_main_dynamic_row()
   if self.held and not self:any_mod_active() and not self.takeover_mode then
     local tr = self.tracks[self.held.t]
     if self.track_cfg[self.held.t].type == "drum" then
       local v = tr.vels[self.held.s]
-      for x = 1, 16 do self:grid_led(x, cfg.DYN_ROW, (x - 1) <= v and 10 or 2) end
+      for x = 1, 16 do self:grid_led(x, dyn_row, (x - 1) <= v and 10 or 2) end
     else
       local p = tr.pitches[self.held.s]
       local scale = cfg.SCALES[self.scale_type] or cfg.SCALES.chromatic
@@ -1886,9 +2311,9 @@ function App:draw_dynamic_row()
         local is_root = ((x - 1) % #scale) == 0
         local is_on = false
         if self.track_cfg[self.held.t].type == "poly" then is_on = self:poly_has_pitch(p, x) else is_on = (x == p) end
-        if is_on then self:grid_led(x, cfg.DYN_ROW, 15)
-        elseif is_root then self:grid_led(x, cfg.DYN_ROW, 5)
-        else self:grid_led(x, cfg.DYN_ROW, 2) end
+        if is_on then self:grid_led(x, dyn_row, 15)
+        elseif is_root then self:grid_led(x, dyn_row, 5)
+        else self:grid_led(x, dyn_row, 2) end
       end
     end
     return
@@ -1898,9 +2323,9 @@ function App:draw_dynamic_row()
     local oct = self.tracks[self.sel_track].octave
     for x = 1, 16 do
       local o = x - 8
-      if o == oct then self:grid_led(x, cfg.DYN_ROW, 15)
-      elseif x == 8 then self:grid_led(x, cfg.DYN_ROW, 5)
-      else self:grid_led(x, cfg.DYN_ROW, 2) end
+      if o == oct then self:grid_led(x, dyn_row, 15)
+      elseif x == 8 then self:grid_led(x, dyn_row, 5)
+      else self:grid_led(x, dyn_row, 2) end
     end
     return
   end
@@ -1910,30 +2335,30 @@ function App:draw_dynamic_row()
     for x = 1, 16 do
       local o = x - 8
       if o == trans then
-        self:grid_led(x, cfg.DYN_ROW, 15)
+        self:grid_led(x, dyn_row, 15)
       elseif x == 8 then
-        self:grid_led(x, cfg.DYN_ROW, 5)
+        self:grid_led(x, dyn_row, 5)
       else
-        self:grid_led(x, cfg.DYN_ROW, 2)
+        self:grid_led(x, dyn_row, 2)
       end
     end
     return
   end
 
   if self.mod_held[cfg.MOD.RAND_NOTES] or self.mod_held[cfg.MOD.RAND_STEPS] then
-    for x = 1, 16 do self:grid_led(x, cfg.DYN_ROW, 2) end
+    for x = 1, 16 do self:grid_led(x, dyn_row, 2) end
     return
   end
 
   if self.mod_held[cfg.MOD.BEAT_RPT] then
     local rpt_len = tonumber(self.beat_repeat_len) or 0
     if self.beat_repeat_mode == "one-handed" then
-      for x = 1, 16 do self:grid_led(x, cfg.DYN_ROW, 1) end
+      for x = 1, 16 do self:grid_led(x, dyn_row, 1) end
       for _, col in ipairs({ 13, 14, 15, 16 }) do
-        self:grid_led(col, cfg.DYN_ROW, self:get_beat_repeat_column_for_length(rpt_len) == col and 10 or 3)
+        self:grid_led(col, dyn_row, self:get_beat_repeat_column_for_length(rpt_len) == col and 10 or 3)
       end
     else
-      for x = 1, 16 do self:grid_led(x, cfg.DYN_ROW, x <= rpt_len and 10 or 2) end
+      for x = 1, 16 do self:grid_led(x, dyn_row, x <= rpt_len and 10 or 2) end
     end
     return
   end
@@ -1945,29 +2370,44 @@ function App:draw_dynamic_row()
       local sel = amt + 8
       if amt ~= 0 then
         if (amt > 0 and x >= center and x <= sel) or (amt < 0 and x <= center and x >= sel) then
-          self:grid_led(x, cfg.DYN_ROW, 10)
+          self:grid_led(x, dyn_row, 10)
         elseif x == center then
-          self:grid_led(x, cfg.DYN_ROW, 5)
+          self:grid_led(x, dyn_row, 5)
         else
-          self:grid_led(x, cfg.DYN_ROW, 2)
+          self:grid_led(x, dyn_row, 2)
         end
       else
-        if x == center then self:grid_led(x, cfg.DYN_ROW, 5) else self:grid_led(x, cfg.DYN_ROW, 2) end
+        if x == center then self:grid_led(x, dyn_row, 5) else self:grid_led(x, dyn_row, 2) end
       end
     end
     return
   end
 
-  if self.mod_held[cfg.MOD.SHIFT] and self:mod_active(cfg.MOD.FILL) then
+  if self.mod_held[cfg.MOD.SHIFT] and self.mod_held[cfg.MOD.RATIOS] then
     for x = 1, 16 do
-      if x <= 4 then self:grid_led(x, cfg.DYN_ROW, self.save_slots[x] and 8 or 3) else self:grid_led(x, cfg.DYN_ROW, 1) end
+      if x <= 4 then
+        self:grid_led(x, dyn_row, self.save_slots[x] and 8 or 3)
+      elseif x >= 13 then
+        self:grid_led(x, dyn_row, self.save_slots[x - 12] and 12 or 2)
+      else
+        self:grid_led(x, dyn_row, 1)
+      end
     end
     return
   end
 
-  if self.mod_held[cfg.MOD.SHIFT] and self:mod_active(cfg.MOD.TEMP) then
+  if self.mod_held[cfg.MOD.RATIOS] then
     for x = 1, 16 do
-      if x <= 4 then self:grid_led(x, cfg.DYN_ROW, self.save_slots[x] and 12 or 2) else self:grid_led(x, cfg.DYN_ROW, 1) end
+      if x <= 8 then
+        if x <= self.ratio_pending_cycle then
+          self:grid_led(x, dyn_row, x == self.ratio_pending_position and 12 or 3)
+        else
+          self:grid_led(x, dyn_row, 1)
+        end
+      else
+        local cycle = x - 8
+        self:grid_led(x, dyn_row, cycle == self.ratio_pending_cycle and 15 or 3)
+      end
     end
     return
   end
@@ -1978,13 +2418,13 @@ function App:draw_dynamic_row()
     local div = self.sel_track and self.track_clock_div[self.sel_track] or 1
     for x = 1, 16 do
       if x == center then
-        self:grid_led(x, cfg.DYN_ROW, 15)
+        self:grid_led(x, dyn_row, 15)
       elseif x < center then
         local m = center - x + 1
-        self:grid_led(x, cfg.DYN_ROW, (self.sel_track and div == 1 and mult == m) and 12 or 3)
+        self:grid_led(x, dyn_row, (self.sel_track and div == 1 and mult == m) and 12 or 3)
       else
         local d = x - center + 1
-        self:grid_led(x, cfg.DYN_ROW, (self.sel_track and mult == 1 and div == d) and 12 or 3)
+        self:grid_led(x, dyn_row, (self.sel_track and mult == 1 and div == d) and 12 or 3)
       end
     end
     return
@@ -1992,6 +2432,7 @@ function App:draw_dynamic_row()
 end
 
 function App:draw_mod_row()
+  local mod_row = self:get_main_mod_row()
   for x = 1, 16 do
     local lv = 0
     if self:mod_active(x) then
@@ -2005,15 +2446,17 @@ function App:draw_mod_row()
     elseif x ~= 5 then
       lv = 3
     end
-    if lv > 0 then self:grid_led(x, cfg.MOD_ROW, lv) end
+    if lv > 0 then self:grid_led(x, mod_row, lv) end
   end
 end
 
 function App:draw_takeover()
   local tr = self:ensure_track_state(self.sel_track)
   local tc = self.track_cfg[self.sel_track]
+  local step_cache = self:build_arc_step_cache(self.sel_track, tr, tc)
   local fills = self.fill_patterns[self.sel_track] or {}
   local current_step = self:get_track_step(self.sel_track)
+  local takeover_rows = self:get_main_takeover_note_rows()
 
   local lo, hi = self:get_track_bounds(tr)
 
@@ -2021,24 +2464,29 @@ function App:draw_takeover()
     for s = 1, cfg.NUM_STEPS do
       local in_range = s >= lo and s <= hi
       local fill = fills[s]
-      if tr.gates[s] then
-        local v = tr.vels[s]
-        for row = 1, 15 do
-          local level_at_row = 16 - row
-          if level_at_row <= v then
-            local lv = (s == current_step and self.playing) and 15 or 10
-            if not in_range then lv = math.floor(lv / 2) end
-            self:grid_led(s, row, lv)
-          end
+      local step_data = step_cache[s]
+      if in_range and self:is_beat_column(s) then
+        for row = 1, takeover_rows do
+          self:grid_led(s, row, 2)
+        end
+      end
+      if step_data then
+        local top_row = self:vel_level_to_main_takeover_row(step_data.vel)
+        local manual = step_data.source == "manual"
+        local lv = manual and ((s == current_step and self.playing) and 15 or 10)
+          or ((s == current_step and self.playing) and 11 or 7)
+        if not in_range then lv = math.floor(lv / 2) end
+        for row = top_row, takeover_rows do
+          self:grid_led(s, row, lv)
         end
       elseif fill then
-        local row = clamp(16 - clamp(tonumber(fill.vel) or cfg.DEFAULT_VEL_LEVEL, 1, 15), 1, 15)
+        local row = self:vel_level_to_main_takeover_row(fill.vel)
         local lv = (s == current_step and self.playing) and 12 or 6
         if not in_range then lv = math.floor(lv / 2) end
         self:grid_led(s, row, lv)
-        self:grid_led(s, 15, math.max((s == current_step and self.playing) and 4 or 1, 3))
+        self:grid_led(s, takeover_rows, math.max((s == current_step and self.playing) and 4 or 1, 3))
       else
-        if s == current_step and self.playing then self:grid_led(s, 15, 4) elseif in_range then self:grid_led(s, 15, 1) end
+        if s == current_step and self.playing then self:grid_led(s, takeover_rows, 4) elseif in_range then self:grid_led(s, takeover_rows, 1) end
       end
     end
   else
@@ -2047,19 +2495,26 @@ function App:draw_takeover()
       local is_playhead = (s == current_step and self.playing)
       local in_range = s >= lo and s <= hi
       local fill = fills[s]
-      local fill_degree = fill and clamp(tonumber(fill.pitch) or 1, 1, 16) or nil
-      for row = 1, 15 do
-        local degree = 16 - row
+      local fill_degree = fill and clamp(tonumber(fill.pitch) or 1, 1, takeover_rows) or nil
+      local step_data = step_cache[s]
+      if in_range and self:is_beat_column(s) then
+        for row = 1, takeover_rows do
+          self:grid_led(s, row, 2)
+        end
+      end
+      for row = 1, takeover_rows do
+        local degree = self:main_takeover_row_to_degree(row)
         local is_root = ((degree - 1) % #scale) == 0
         local is_on = false
         local is_fill = false
-        if tr.gates[s] then
-          if tc.type == "poly" then is_on = self:poly_has_pitch(tr.pitches[s], degree) else is_on = tr.pitches[s] == degree end
+        if step_data then
+          if tc.type == "poly" then is_on = self:poly_has_pitch(step_data.pitch, degree) else is_on = clamp(tonumber(step_data.pitch) or 1, 1, takeover_rows) == degree end
         elseif fill_degree then
           is_fill = degree == fill_degree
         end
         if is_on then
-          local lv = is_playhead and 15 or 12
+          local manual = step_data.source == "manual"
+          local lv = manual and (is_playhead and 15 or 12) or (is_playhead and 11 or 7)
           if not in_range then lv = math.floor(lv / 2) end
           self:grid_led(s, row, lv)
         elseif is_fill then
@@ -2075,7 +2530,7 @@ function App:draw_takeover()
     end
   end
 
-  self:grid_led(cfg.MOD.TAKEOVER, cfg.MOD_ROW, 15)
+  self:grid_led(cfg.MOD.TAKEOVER, self:get_main_mod_row(), 15)
 end
 
 function App:redraw_main_grid()
@@ -2085,14 +2540,18 @@ function App:redraw_main_grid()
   dev:all(0)
   if self.takeover_mode and self.sel_track then
     self:draw_takeover()
-    if self:is_modifier_dynamic_row_active() then
+    if self:is_modifier_dynamic_row_active() and not self:is_main_grid_128() then
       self:draw_dynamic_row()
     end
     self:draw_mod_row()
   else
-    for t = 1, cfg.NUM_TRACKS do
+    local page_start = self:get_main_track_page_start()
+    local page_end = math.min(cfg.NUM_TRACKS, page_start + self:get_main_overview_track_rows() - 1)
+    for t = page_start, page_end do
       local y = self:track_to_row(t)
       local tr = self:ensure_track_state(t)
+      local tc = self.track_cfg[t]
+      local step_cache = self:build_arc_step_cache(t, tr, tc)
       local track_playhead = self:get_track_step(t)
       local lo, hi = self:get_track_bounds(tr)
       local in_range_fn = function(s)
@@ -2103,9 +2562,16 @@ function App:redraw_main_grid()
         local lv = 0
         local is_playhead = (s == track_playhead and self.playing)
         local in_range = in_range_fn(s)
+        local step_data = step_cache[s]
+        local has_manual = tr.gates[s]
+        local has_arc = step_data and step_data.source == "arc"
 
         if s == 1 or s == 5 or s == 9 or s == 13 then lv = 2 end
-        if tr.gates[s] then lv = 10 end
+        if has_manual then
+          lv = 10
+        elseif has_arc then
+          lv = 6
+        end
         if self.fill_patterns[t][s] then lv = math.max(lv, 5) end
         if tr.muted then lv = math.floor(lv / 3) end
 
@@ -2144,6 +2610,7 @@ function App:redraw_aux_grid()
   local t = clamp(tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
   local tr = self:ensure_track_state(t)
   local tc = self.track_cfg[t]
+  local step_cache = self:build_arc_step_cache(t, tr, tc)
   local fills = self.fill_patterns[t] or {}
   local current_step = self:get_track_step(t)
   local lo, hi = self:get_track_bounds(tr)
@@ -2154,12 +2621,19 @@ function App:redraw_aux_grid()
       local in_range = s >= lo and s <= hi
       local is_playhead = (s == current_step and self.playing)
       local fill = fills[s]
+      local step_data = step_cache[s]
       local top_row = nil
       local lv = 0
 
-      if tr.gates[s] then
-        top_row = self:vel_level_to_aux_row(tr.vels[s])
-        lv = is_playhead and 15 or 12
+      if in_range and self:is_beat_column(s) then
+        for row = 1, cfg.AUX_GRID_ROWS do
+          self:grid_led(dev, s, row, 2)
+        end
+      end
+
+      if step_data then
+        top_row = self:vel_level_to_aux_row(step_data.vel)
+        lv = (step_data.source == "manual") and (is_playhead and 15 or 12) or (is_playhead and 10 or 7)
       elseif fill then
         top_row = self:vel_level_to_aux_row(fill.vel)
         lv = is_playhead and 10 or 6
@@ -2181,6 +2655,13 @@ function App:redraw_aux_grid()
       local fill = fills[s]
       local fill_degree = fill and self:get_closest_aux_degree(t, fill.pitch) or nil
       local fill_above = fill and self:is_aux_degree_above_visible_octave(t, fill.pitch) or false
+      local step_data = step_cache[s]
+
+      if in_range and self:is_beat_column(s) then
+        for row = 1, cfg.AUX_GRID_ROWS do
+          self:grid_led(dev, s, row, 2)
+        end
+      end
 
       for degree = 1, cfg.AUX_GRID_ROWS do
         local row = self:degree_to_aux_row(degree)
@@ -2189,9 +2670,9 @@ function App:redraw_aux_grid()
         local is_fill = false
         local is_above = false
 
-        if tr.gates[s] then
+        if step_data then
           if tc.type == "poly" then
-            for _, stored_degree in ipairs(tr.pitches[s]) do
+            for _, stored_degree in ipairs(step_data.pitch or {}) do
               if self:get_closest_aux_degree(t, stored_degree) == degree then
                 is_on = true
                 is_above = self:is_aux_degree_above_visible_octave(t, stored_degree)
@@ -2199,9 +2680,9 @@ function App:redraw_aux_grid()
               end
             end
           else
-            is_on = self:get_closest_aux_degree(t, tr.pitches[s]) == degree
+            is_on = self:get_closest_aux_degree(t, step_data.pitch) == degree
             if is_on then
-              is_above = self:is_aux_degree_above_visible_octave(t, tr.pitches[s])
+              is_above = self:is_aux_degree_above_visible_octave(t, step_data.pitch)
             end
           end
         elseif fill_degree then
@@ -2210,7 +2691,10 @@ function App:redraw_aux_grid()
         end
 
         if is_on then
-          local lv = is_above and ((is_playhead and 7) or 5) or ((is_playhead and 15) or 12)
+          local manual = step_data.source == "manual"
+          local lv = is_above
+            and (manual and ((is_playhead and 7) or 5) or ((is_playhead and 5) or 4))
+            or (manual and ((is_playhead and 15) or 12) or ((is_playhead and 10) or 7))
           if not in_range then lv = math.max(1, math.floor(lv / 2)) end
           self:grid_led(dev, s, row, lv)
         elseif is_fill then
@@ -2245,6 +2729,163 @@ function App:redraw_grid(force)
   self.redraw_deferred = false
 end
 
+
+function App:get_arc_led_index(pos, len)
+  if len <= 0 then return 1 end
+  return clamp(math.floor(((pos - 1) * 64) / len) + 1, 1, 64)
+end
+
+function App:redraw_arc()
+  local dev = self.arc_dev
+  if not dev then return end
+
+  dev:all(0)
+
+  if not self.sel_track then
+    dev:refresh()
+    return
+  end
+
+  local t = clamp(tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+  local tr = self:ensure_track_state(t)
+  local arc_state = self:get_arc_state(t)
+  local order, active = self:get_arc_pattern(t)
+  local len = #order
+
+  if len > 0 then
+    for idx, step in ipairs(order) do
+      local led = self:get_arc_led_index(idx, len)
+      dev:led(1, led, active[step] and 12 or 3)
+      dev:led(2, led, 3)
+    end
+
+    local rotation_led = self:get_arc_led_index(self:wrap_arc_index((arc_state.rotation or 1) - 1, len), len)
+    dev:led(2, rotation_led, 15)
+  end
+
+  local variance_fill = clamp(math.floor(((arc_state.variance or 0) / 100) * 64 + 0.5), 0, 64)
+  for led = 1, 64 do
+    dev:led(3, led, led <= variance_fill and 12 or 2)
+  end
+
+  local modes = #ARC_VARIANCE_MODES
+  for idx = 1, modes do
+    local start_led = math.floor(((idx - 1) * 64) / modes) + 1
+    local end_led = math.floor((idx * 64) / modes)
+    local level = (idx == arc_state.mode) and 12 or 3
+    for led = start_led, end_led do
+      dev:led(4, led, level)
+    end
+  end
+
+  dev:refresh()
+end
+
+function App:begin_arc_history_snapshot()
+  local now = now_ms()
+  if now - (self.arc_last_history_at or 0) > 0.25 * 1000 then
+    self:push_undo_state()
+    self.arc_last_history_at = now
+  end
+end
+
+function App:consume_arc_delta(knob, delta, threshold)
+  local accum = (self.arc_delta_accum[knob] or 0) + delta
+  local steps = 0
+
+  while math.abs(accum) >= threshold do
+    if accum > 0 then
+      steps = steps + 1
+      accum = accum - threshold
+    else
+      steps = steps - 1
+      accum = accum + threshold
+    end
+  end
+
+  self.arc_delta_accum[knob] = accum
+  return steps
+end
+
+function App:handle_arc_delta(n, d)
+  if n < 1 or n > 4 or d == 0 then return end
+  if not self.sel_track then self.sel_track = 1 end
+
+  local t = clamp(tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+  local tr = self:ensure_track_state(t)
+  local arc_state = self:get_arc_state(t)
+  if not tr or not arc_state then return end
+
+  local span_len = #self:get_track_step_order(tr)
+  local changed = false
+  local label = nil
+  local value = nil
+
+  if n == 1 then
+    local steps = self:consume_arc_delta(n, d, self.arc_delta_thresholds[1] or ARC_DELTA_THRESHOLDS[1])
+    if steps ~= 0 then
+      self:begin_arc_history_snapshot()
+      local next_pulses = clamp((arc_state.pulses or 0) + steps, 0, span_len)
+      if next_pulses ~= arc_state.pulses then
+        arc_state.pulses = next_pulses
+        changed = true
+        label = "arc pulses"
+        value = tostring(next_pulses)
+      end
+    end
+  elseif n == 2 then
+    local steps = self:consume_arc_delta(n, d, self.arc_delta_thresholds[2] or ARC_DELTA_THRESHOLDS[2])
+    if steps ~= 0 then
+      self:begin_arc_history_snapshot()
+      arc_state.rotation = math.floor((arc_state.rotation or 1) + steps)
+      changed = true
+      label = "arc rotate"
+      value = tostring(self:wrap_arc_index((arc_state.rotation or 1) - 1, math.max(1, span_len)))
+    end
+  elseif n == 3 then
+    local steps = self:consume_arc_delta(n, d, self.arc_delta_thresholds[3] or ARC_DELTA_THRESHOLDS[3])
+    if steps ~= 0 then
+      self:begin_arc_history_snapshot()
+      local next_variance = clamp((arc_state.variance or 0) + steps, 0, 100)
+      if next_variance ~= arc_state.variance then
+        arc_state.variance = next_variance
+        changed = true
+        label = "arc variance"
+        value = tostring(next_variance) .. "%"
+      end
+    end
+  elseif n == 4 then
+    local steps = self:consume_arc_delta(n, d, self.arc_delta_thresholds[4] or ARC_DELTA_THRESHOLDS[4])
+    if steps ~= 0 then
+      self:begin_arc_history_snapshot()
+      local next_mode = clamp((arc_state.mode or 1) + steps, 1, #ARC_VARIANCE_MODES)
+      if next_mode ~= arc_state.mode then
+        arc_state.mode = next_mode
+        changed = true
+        label = "arc mode"
+        value = self:get_arc_mode_name(next_mode)
+      end
+    end
+  end
+
+  if changed then
+    if label and value then self:flash_status(label, value, 0.3) end
+    self:request_arc_redraw()
+    self:request_redraw()
+  end
+end
+
+function App:connect_arc()
+  if not arc or not arc.connect then return end
+  local dev = arc.connect()
+  if not dev then return end
+  self.arc_dev = dev
+  dev.delta = function(n, d)
+    self:handle_arc_delta(n, d)
+  end
+  self:request_arc_redraw()
+end
+
 function App:grid_led(a, b, c, d)
   local dev = self.main_grid_dev
   local x = a
@@ -2261,9 +2902,14 @@ function App:grid_led(a, b, c, d)
   if dev then dev:led(x, y, l) end
 end
 
+function App:request_arc_redraw()
+  self.arc_dirty = true
+end
+
 function App:request_redraw()
   self.screen_dirty = true
   self.grid_dirty = true
+  if not self.playing then self.arc_dirty = true end
   if not self:is_menu_active() then
     redraw()
   end
@@ -2391,9 +3037,31 @@ function App:handle_aux_grid_event(x, y, z)
 
   self:push_undo_state()
 
-  if tc.type == "drum" then
+  local ratio_value = nil
+  if self.mod_held[cfg.MOD.RATIOS] and tc.type == "drum" then
     tr.gates[x] = true
     tr.vels[x] = self:aux_row_to_vel_level(y)
+    ratio_value = self:apply_pending_ratio_to_step(t, x)
+  elseif self.mod_held[cfg.MOD.RATIOS] and tc.type == "poly" then
+    tr.pitches[x] = self:poly_toggle_aux_degree(t, self:poly_active_pitches(tr, x), self:aux_row_to_degree(y))
+    tr.gates[x] = (#tr.pitches[x] > 0)
+    if tr.gates[x] then
+      tr.vels[x] = clamp(tonumber(tr.vels[x]) or cfg.DEFAULT_VEL_LEVEL, 1, 15)
+      ratio_value = self:apply_pending_ratio_to_step(t, x)
+    end
+  elseif self.mod_held[cfg.MOD.RATIOS] then
+    tr.gates[x] = true
+    tr.vels[x] = clamp(tonumber(tr.vels[x]) or cfg.DEFAULT_VEL_LEVEL, 1, 15)
+    tr.pitches[x] = self:aux_row_to_degree(y)
+    ratio_value = self:apply_pending_ratio_to_step(t, x)
+  elseif tc.type == "drum" then
+    local next_vel = self:aux_row_to_vel_level(y)
+    if tr.gates[x] and tr.vels[x] == next_vel then
+      tr.gates[x] = false
+    else
+      tr.gates[x] = true
+      tr.vels[x] = next_vel
+    end
   elseif tc.type == "poly" then
     tr.pitches[x] = self:poly_toggle_aux_degree(t, self:poly_active_pitches(tr, x), self:aux_row_to_degree(y))
     tr.gates[x] = (#tr.pitches[x] > 0)
@@ -2401,27 +3069,37 @@ function App:handle_aux_grid_event(x, y, z)
       tr.vels[x] = clamp(tonumber(tr.vels[x]) or cfg.DEFAULT_VEL_LEVEL, 1, 15)
     end
   else
-    tr.gates[x] = true
-    tr.vels[x] = clamp(tonumber(tr.vels[x]) or cfg.DEFAULT_VEL_LEVEL, 1, 15)
-    tr.pitches[x] = self:aux_row_to_degree(y)
+    local next_degree = self:aux_row_to_degree(y)
+    if tr.gates[x] and self:get_closest_aux_degree(t, tr.pitches[x]) == next_degree then
+      tr.gates[x] = false
+    else
+      tr.gates[x] = true
+      tr.vels[x] = clamp(tonumber(tr.vels[x]) or cfg.DEFAULT_VEL_LEVEL, 1, 15)
+      tr.pitches[x] = next_degree
+    end
   end
 
+  if ratio_value then self:flash_mod_applied(cfg.MOD.RATIOS, ratio_value) end
+  self:request_arc_redraw()
   self:request_redraw()
 end
 
 function App:handle_main_grid_event(x, y, z)
+  local mod_row = self:get_main_mod_row()
+  local dyn_row = self:get_main_dynamic_row()
+  local takeover_rows = self:get_main_takeover_note_rows()
   if self.takeover_mode then
-    if y == cfg.MOD_ROW then
+    if y == mod_row then
       self:handle_mod_row(x, z)
       return
     end
 
-    if y == cfg.DYN_ROW and self:is_modifier_dynamic_row_active() then
+    if y == dyn_row and self:is_modifier_dynamic_row_active() and not self:is_main_grid_128() then
       self:handle_dynamic_row(x, z)
       return
     end
 
-    if y >= 1 and y <= 15 then
+    if y >= 1 and y <= takeover_rows then
       local t = self.sel_track or 1
       self.sel_track = t
       local tr = self.tracks[t]
@@ -2461,7 +3139,29 @@ function App:handle_main_grid_event(x, y, z)
         elseif self.mod_held[cfg.MOD.CLEAR] then
           self:clear_track(t)
           applied_value = "track"
-        elseif self:mod_active(cfg.MOD.FILL) then
+        elseif self.mod_held[cfg.MOD.RATIOS] then
+          local degree = self:main_takeover_row_to_degree(y)
+          local level = self:main_takeover_row_to_vel_level(y)
+          if tc.type == "drum" then
+            tr.gates[x] = true
+            tr.vels[x] = level
+          elseif tc.type == "poly" then
+            tr.pitches[x] = self:poly_toggle_pitch(self:poly_active_pitches(tr, x), degree)
+            tr.gates[x] = (#tr.pitches[x] > 0)
+            if tr.gates[x] then
+              tr.vels[x] = clamp(tonumber(tr.vels[x]) or cfg.DEFAULT_VEL_LEVEL, 1, 15)
+            end
+          else
+            tr.gates[x] = true
+            tr.pitches[x] = degree
+            tr.vels[x] = clamp(tonumber(tr.vels[x]) or cfg.DEFAULT_VEL_LEVEL, 1, 15)
+          end
+          if tr.gates[x] then
+            applied_value = self:apply_pending_ratio_to_step(t, x)
+          else
+            applied_value = "off"
+          end
+        elseif self:mod_active(cfg.MOD.TEMP) and self:is_temp_button_fill_mode() then
           local fill_vel = clamp(16 - y, 1, 15)
           local fill_pitch = clamp(16 - y, 1, 16)
           if self.fill_patterns[t][x] then
@@ -2477,8 +3177,8 @@ function App:handle_main_grid_event(x, y, z)
             applied_value = (tc.type == "drum") and ("vel " .. tostring(fill_vel)) or ("deg " .. tostring(fill_pitch))
           end
         elseif self:mod_active(cfg.MOD.TEMP) then
-          local degree = clamp(16 - y, 1, 16)
-          local level = clamp(16 - y, 1, 15)
+          local degree = self:main_takeover_row_to_degree(y)
+          local level = self:main_takeover_row_to_vel_level(y)
           local was_off = not tr.gates[x]
           if not tr.gates[x] then
             tr.gates[x] = true
@@ -2506,8 +3206,8 @@ function App:handle_main_grid_event(x, y, z)
           self.spice[t][x] = nil
           applied_value = "clear"
         elseif tc.type == "drum" then
-          local level = clamp(16 - y, 1, 15)
-          if y == cfg.DYN_ROW then
+          local level = self:main_takeover_row_to_vel_level(y)
+          if y == dyn_row and not self:is_main_grid_128() then
             if tr.gates[x] then
               tr.gates[x] = false
             else
@@ -2523,7 +3223,7 @@ function App:handle_main_grid_event(x, y, z)
             end
           end
         else
-          local degree = 16 - y
+          local degree = self:main_takeover_row_to_degree(y)
           if tc.type == "poly" then
             tr.pitches[x] = self:poly_toggle_pitch(self:poly_active_pitches(tr, x), degree)
             tr.gates[x] = (#tr.pitches[x] > 0)
@@ -2540,23 +3240,24 @@ function App:handle_main_grid_event(x, y, z)
       else
         if self.held and self.held.t == t and self.held.s == x then
           local hold_duration = now_ms() - self.held_time
-          if hold_duration < self.HOLD_THRESHOLD and self.held.was_on and self.held.y == cfg.DYN_ROW then tr.gates[x] = false end
+          if hold_duration < self.HOLD_THRESHOLD and self.held.was_on and self.held.y == dyn_row and not self:is_main_grid_128() then tr.gates[x] = false end
         end
         self.held = nil
       end
 
       if not self.mod_held[cfg.MOD.SPICE] then self.spice_pending_amount = nil end
+      self:request_arc_redraw()
       self:request_redraw()
     end
     return
   end
 
-  if y == cfg.MOD_ROW then
+  if y == mod_row then
     self:handle_mod_row(x, z)
     return
   end
 
-  if y == cfg.DYN_ROW then
+  if y == dyn_row then
     self:handle_dynamic_row(x, z)
     return
   end
@@ -2587,7 +3288,15 @@ function App:handle_main_grid_event(x, y, z)
       elseif self.mod_held[cfg.MOD.CLEAR] then
         self:clear_track(t)
         self.sel_track = t
-      elseif self:mod_active(cfg.MOD.FILL) then
+      elseif self.mod_held[cfg.MOD.RATIOS] then
+        if not self.tracks[t].gates[x] then
+          self.tracks[t].gates[x] = true
+          self.tracks[t].vels[x] = cfg.DEFAULT_VEL_LEVEL
+          if self.track_cfg[t].type == "poly" and type(self.tracks[t].pitches[x]) ~= "table" then self.tracks[t].pitches[x] = { 1 } end
+        end
+        self:apply_pending_ratio_to_step(t, x)
+        self.sel_track = t
+      elseif self:mod_active(cfg.MOD.TEMP) and self:is_temp_button_fill_mode() then
         if self.fill_patterns[t][x] then
           self.fill_patterns[t][x] = nil
         else
@@ -2629,6 +3338,7 @@ function App:handle_main_grid_event(x, y, z)
       self.held = nil
     end
     if not self.mod_held[cfg.MOD.SPICE] then self.spice_pending_amount = nil end
+    self:request_arc_redraw()
     self:request_redraw()
   end
 end
@@ -2772,6 +3482,7 @@ function App:enc(n, d)
     params:delta("permute_tempo", d)
   elseif n == 3 then
     self.sel_track = clamp((self.sel_track or 1) + d, 1, cfg.NUM_TRACKS)
+    self:request_arc_redraw()
     self:request_redraw()
   end
 end
@@ -2781,6 +3492,7 @@ function App:init()
     self:attach_grid_port(port)
   end
   self:refresh_grid_assignments()
+  self:connect_arc()
 
   if grid then
     grid.add = function(new_grid)
@@ -2800,6 +3512,17 @@ function App:init()
     end
   end
 
+  if arc then
+    arc.add = function()
+      self:connect_arc()
+      self:request_redraw()
+    end
+
+    arc.remove = function()
+      self.arc_dev = nil
+    end
+  end
+
   param_setup.setup(self)
   self:connect_midi_from_params()
   self.factory_default_setup_values = self:capture_default_setup_values()
@@ -2811,6 +3534,10 @@ function App:init()
       self:redraw_grid()
       self.grid_dirty = false
     end
+    if self.arc_dirty then
+      self:redraw_arc()
+      self.arc_dirty = false
+    end
   end, 1 / 30, -1)
   self.grid_timer:start()
 
@@ -2820,6 +3547,10 @@ end
 function App:cleanup()
   self:stop()
   if self.grid_timer then self.grid_timer:stop() end
+  if self.arc_dev then
+    self.arc_dev:all(0)
+    self.arc_dev:refresh()
+  end
 end
 
 return App
