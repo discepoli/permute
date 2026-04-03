@@ -152,6 +152,7 @@ function App.new()
 
   self.screen_dirty = true
   self.grid_dirty = true
+  self.arc_dirty = true
   self.grid_timer = nil
   self.internal_clock_id = nil
   self.arc_dev = nil
@@ -824,8 +825,8 @@ function App:get_arc_wave_value(track, pos, len, mode)
   return 0
 end
 
-function App:get_arc_reference_step(track, order, step)
-  local tr = self:ensure_track_state(track)
+function App:get_arc_reference_step(track, order, step, tr)
+  tr = tr or self:ensure_track_state(track)
   if not tr then return nil end
 
   local index_of = {}
@@ -854,60 +855,73 @@ function App:get_arc_reference_step(track, order, step)
   return nil
 end
 
-function App:get_arc_step_data(track, step)
-  local tr = self:ensure_track_state(track)
-  local tc = self.track_cfg[track]
-  if not tr or not tc then return nil end
-  if tr.gates[step] then
-    return {
-      source = "manual",
-      vel = tr.vels[step],
-      pitch = tr.pitches[step]
-    }
-  end
+function App:build_arc_step_cache(track, tr, tc)
+  tr = tr or self:ensure_track_state(track)
+  tc = tc or self.track_cfg[track]
+  if not tr or not tc then return {} end
 
-  local order, active, positions = self:get_arc_pattern(track)
-  if not active[step] then return nil end
-
-  local pos = positions[step] or 1
-  local len = #order
   local arc_state = self:get_arc_state(track)
-  local variance_amount = clamp(tonumber(arc_state.variance) or 0, 0, 100)
-  local variance_depth = math.floor((variance_amount / 100) * 7 + 0.5)
-  local wave = self:get_arc_wave_value(track, pos, len, arc_state.mode)
-  local shift = math.floor((wave * variance_depth) + ((wave >= 0) and 0.5 or -0.5))
-  local ref_step = self:get_arc_reference_step(track, order, step)
+  local order, active, positions = self:get_arc_pattern(track)
+  local cache = {}
 
-  if tc.type == "drum" then
-    local base_vel = ref_step and tr.vels[ref_step] or cfg.DEFAULT_VEL_LEVEL
-    return {
-      source = "arc",
-      vel = clamp(base_vel + shift, 1, 15)
-    }
-  elseif tc.type == "poly" then
-    local base_pitch = ref_step and tr.pitches[ref_step] or { 1 }
-    local chord = {}
-    if type(base_pitch) == "table" then
-      for i, degree in ipairs(base_pitch) do
-        chord[i] = clamp((tonumber(degree) or 1) + shift, 1, 16)
-      end
-    else
-      chord[1] = clamp((tonumber(base_pitch) or 1) + shift, 1, 16)
+  for s = 1, cfg.NUM_STEPS do
+    if tr.gates[s] then
+      cache[s] = {
+        source = "manual",
+        vel = tr.vels[s],
+        pitch = tr.pitches[s]
+      }
     end
-    if #chord == 0 then chord[1] = 1 end
-    return {
-      source = "arc",
-      vel = ref_step and tr.vels[ref_step] or cfg.DEFAULT_VEL_LEVEL,
-      pitch = chord
-    }
   end
 
-  local base_degree = ref_step and tr.pitches[ref_step] or 1
-  return {
-    source = "arc",
-    vel = ref_step and tr.vels[ref_step] or cfg.DEFAULT_VEL_LEVEL,
-    pitch = clamp((tonumber(base_degree) or 1) + shift, 1, 16)
-  }
+  for _, step in ipairs(order) do
+    if active[step] and not cache[step] then
+      local pos = positions[step] or 1
+      local len = #order
+      local variance_amount = clamp(tonumber(arc_state.variance) or 0, 0, 100)
+      local variance_depth = math.floor((variance_amount / 100) * 7 + 0.5)
+      local wave = self:get_arc_wave_value(track, pos, len, arc_state.mode)
+      local shift = math.floor((wave * variance_depth) + ((wave >= 0) and 0.5 or -0.5))
+      local ref_step = self:get_arc_reference_step(track, order, step, tr)
+
+      if tc.type == "drum" then
+        local base_vel = ref_step and tr.vels[ref_step] or cfg.DEFAULT_VEL_LEVEL
+        cache[step] = {
+          source = "arc",
+          vel = clamp(base_vel + shift, 1, 15)
+        }
+      elseif tc.type == "poly" then
+        local base_pitch = ref_step and tr.pitches[ref_step] or { 1 }
+        local chord = {}
+        if type(base_pitch) == "table" then
+          for i, degree in ipairs(base_pitch) do
+            chord[i] = clamp((tonumber(degree) or 1) + shift, 1, 16)
+          end
+        else
+          chord[1] = clamp((tonumber(base_pitch) or 1) + shift, 1, 16)
+        end
+        if #chord == 0 then chord[1] = 1 end
+        cache[step] = {
+          source = "arc",
+          vel = ref_step and tr.vels[ref_step] or cfg.DEFAULT_VEL_LEVEL,
+          pitch = chord
+        }
+      else
+        local base_degree = ref_step and tr.pitches[ref_step] or 1
+        cache[step] = {
+          source = "arc",
+          vel = ref_step and tr.vels[ref_step] or cfg.DEFAULT_VEL_LEVEL,
+          pitch = clamp((tonumber(base_degree) or 1) + shift, 1, 16)
+        }
+      end
+    end
+  end
+
+  return cache
+end
+
+function App:get_arc_step_data(track, step)
+  return self:build_arc_step_cache(track)[step]
 end
 
 function App:mod_name(id)
@@ -1786,6 +1800,7 @@ function App:play_tracks(pulse_scale)
   for t = 1, cfg.NUM_TRACKS do
     local tr = self:ensure_track_state(t)
     local tc = self.track_cfg[t]
+    local step_cache = self:build_arc_step_cache(t, tr, tc)
     local mult = self.track_clock_mult[t]
     local div = self.track_clock_div[t]
     local ratio = (mult / div) * scale
@@ -1799,7 +1814,7 @@ function App:play_tracks(pulse_scale)
       local st = self:get_track_step(t)
       local gate_ticks = clamp(tonumber(self.track_gate_ticks[t]) or ((tc.type == "drum") and self.drum_gate_clocks or self.melody_gate_clocks), 1, 24)
       local has_fill = self.fill_active and self.fill_patterns[t][st]
-      local step_data = self:get_arc_step_data(t, st)
+      local step_data = step_cache[st]
       local should_play = step_data or has_fill
 
       if self.last_notes[t] then
@@ -2268,6 +2283,7 @@ end
 function App:draw_takeover()
   local tr = self:ensure_track_state(self.sel_track)
   local tc = self.track_cfg[self.sel_track]
+  local step_cache = self:build_arc_step_cache(self.sel_track, tr, tc)
   local fills = self.fill_patterns[self.sel_track] or {}
   local current_step = self:get_track_step(self.sel_track)
 
@@ -2277,7 +2293,7 @@ function App:draw_takeover()
     for s = 1, cfg.NUM_STEPS do
       local in_range = s >= lo and s <= hi
       local fill = fills[s]
-      local step_data = self:get_arc_step_data(self.sel_track, s)
+      local step_data = step_cache[s]
       if in_range and self:is_beat_column(s) then
         for row = 1, 15 do
           self:grid_led(s, row, 2)
@@ -2312,7 +2328,7 @@ function App:draw_takeover()
       local in_range = s >= lo and s <= hi
       local fill = fills[s]
       local fill_degree = fill and clamp(tonumber(fill.pitch) or 1, 1, 16) or nil
-      local step_data = self:get_arc_step_data(self.sel_track, s)
+      local step_data = step_cache[s]
       if in_range and self:is_beat_column(s) then
         for row = 1, 15 do
           self:grid_led(s, row, 2)
@@ -2364,6 +2380,8 @@ function App:redraw_main_grid()
     for t = 1, cfg.NUM_TRACKS do
       local y = self:track_to_row(t)
       local tr = self:ensure_track_state(t)
+      local tc = self.track_cfg[t]
+      local step_cache = self:build_arc_step_cache(t, tr, tc)
       local track_playhead = self:get_track_step(t)
       local lo, hi = self:get_track_bounds(tr)
       local in_range_fn = function(s)
@@ -2374,7 +2392,7 @@ function App:redraw_main_grid()
         local lv = 0
         local is_playhead = (s == track_playhead and self.playing)
         local in_range = in_range_fn(s)
-        local step_data = self:get_arc_step_data(t, s)
+        local step_data = step_cache[s]
         local has_manual = tr.gates[s]
         local has_arc = step_data and step_data.source == "arc"
 
@@ -2422,6 +2440,7 @@ function App:redraw_aux_grid()
   local t = clamp(tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
   local tr = self:ensure_track_state(t)
   local tc = self.track_cfg[t]
+  local step_cache = self:build_arc_step_cache(t, tr, tc)
   local fills = self.fill_patterns[t] or {}
   local current_step = self:get_track_step(t)
   local lo, hi = self:get_track_bounds(tr)
@@ -2432,7 +2451,7 @@ function App:redraw_aux_grid()
       local in_range = s >= lo and s <= hi
       local is_playhead = (s == current_step and self.playing)
       local fill = fills[s]
-      local step_data = self:get_arc_step_data(t, s)
+      local step_data = step_cache[s]
       local top_row = nil
       local lv = 0
 
@@ -2466,7 +2485,7 @@ function App:redraw_aux_grid()
       local fill = fills[s]
       local fill_degree = fill and self:get_closest_aux_degree(t, fill.pitch) or nil
       local fill_above = fill and self:is_aux_degree_above_visible_octave(t, fill.pitch) or false
-      local step_data = self:get_arc_step_data(t, s)
+      local step_data = step_cache[s]
 
       if in_range and self:is_beat_column(s) then
         for row = 1, cfg.AUX_GRID_ROWS do
@@ -2681,6 +2700,7 @@ function App:handle_arc_delta(n, d)
 
   if changed then
     if label and value then self:flash_status(label, value, 0.3) end
+    self:request_arc_redraw()
     self:request_redraw()
   end
 end
@@ -2693,7 +2713,7 @@ function App:connect_arc()
   dev.delta = function(n, d)
     self:handle_arc_delta(n, d)
   end
-  self:redraw_arc()
+  self:request_arc_redraw()
 end
 
 function App:grid_led(a, b, c, d)
@@ -2712,10 +2732,14 @@ function App:grid_led(a, b, c, d)
   if dev then dev:led(x, y, l) end
 end
 
+function App:request_arc_redraw()
+  self.arc_dirty = true
+end
+
 function App:request_redraw()
   self.screen_dirty = true
   self.grid_dirty = true
-  self:redraw_arc()
+  if not self.playing then self.arc_dirty = true end
   if not self:is_menu_active() then
     redraw()
   end
@@ -2858,6 +2882,7 @@ function App:handle_aux_grid_event(x, y, z)
     tr.pitches[x] = self:aux_row_to_degree(y)
   end
 
+  self:request_arc_redraw()
   self:request_redraw()
 end
 
@@ -2998,6 +3023,7 @@ function App:handle_main_grid_event(x, y, z)
       end
 
       if not self.mod_held[cfg.MOD.SPICE] then self.spice_pending_amount = nil end
+      self:request_arc_redraw()
       self:request_redraw()
     end
     return
@@ -3081,6 +3107,7 @@ function App:handle_main_grid_event(x, y, z)
       self.held = nil
     end
     if not self.mod_held[cfg.MOD.SPICE] then self.spice_pending_amount = nil end
+    self:request_arc_redraw()
     self:request_redraw()
   end
 end
@@ -3224,6 +3251,7 @@ function App:enc(n, d)
     params:delta("permute_tempo", d)
   elseif n == 3 then
     self.sel_track = clamp((self.sel_track or 1) + d, 1, cfg.NUM_TRACKS)
+    self:request_arc_redraw()
     self:request_redraw()
   end
 end
@@ -3274,6 +3302,10 @@ function App:init()
     if self.grid_dirty then
       self:redraw_grid()
       self.grid_dirty = false
+    end
+    if self.arc_dirty then
+      self:redraw_arc()
+      self.arc_dirty = false
     end
   end, 1 / 30, -1)
   self.grid_timer:start()
