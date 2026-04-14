@@ -2431,16 +2431,28 @@ end
 
 function App:save_to_slot(slot)
     if slot < 1 or slot > 8 then return end
-    local snap = { g = {}, p = {}, r = {} }
+    local snap = { g = {}, p = {}, v = {}, r = {}, sp = {}, m = {}, key_transpose = self.key_transpose, tt = {} }
     for t = 1, cfg.NUM_TRACKS do
         local tr = self:ensure_track_state(t)
         local tc = self.track_cfg[t]
         snap.g[t] = {}
         snap.p[t] = {}
+        snap.v[t] = {}
         snap.r[t] = {}
+        snap.sp[t] = {}
+        snap.tt[t] = clamp(tonumber(self.track_transpose[t]) or 0, -96, 96)
+        snap.m[t] = {
+            start_step = clamp(tonumber(tr.start_step) or 1, 1, cfg.NUM_STEPS),
+            end_step = clamp(tonumber(tr.end_step) or cfg.NUM_STEPS, 1, cfg.NUM_STEPS),
+            octave = clamp(tonumber(tr.octave) or 0, -7, 8),
+            clock_mult = clamp(tonumber(self.track_clock_mult[t]) or 1, 1, 8),
+            clock_div = clamp(tonumber(self.track_clock_div[t]) or 1, 1, 16),
+            arc = deep_copy_table(tr.arc or { pulses = 0, rotation = 1, variance = 0, mode = 1 })
+        }
         for s = 1, cfg.NUM_STEPS do
             if tr.gates[s] then
                 snap.g[t][s] = 1
+                snap.v[t][s] = clamp(tonumber(tr.vels[s]) or cfg.DEFAULT_VEL_LEVEL, 1, 15)
                 if tc.type == "poly" then
                     local pv = {}
                     for i, d in ipairs(tr.pitches[s]) do pv[i] = d end
@@ -2451,6 +2463,9 @@ function App:save_to_slot(slot)
             end
             if self.ratios[t] and self.ratios[t][s] then
                 snap.r[t][s] = deep_copy_table(self.ratios[t][s])
+            end
+            if self.spice[t] and self.spice[t][s] then
+                snap.sp[t][s] = deep_copy_table(self.spice[t][s])
             end
         end
     end
@@ -2465,16 +2480,29 @@ function App:load_from_slot(slot)
         local tr = self:ensure_track_state(t)
         local tc = self.track_cfg[t]
         self.ratios[t] = {}
+        self.spice[t] = {}
         for s = 1, cfg.NUM_STEPS do
             tr.gates[s] = false
+            tr.vels[s] = cfg.DEFAULT_VEL_LEVEL
             if tc.type == "poly" then tr.pitches[s] = { 1 } else tr.pitches[s] = 1 end
         end
         local sg = snap.g[t] or {}
         local sp = snap.p[t] or {}
+        local sv = snap.v[t] or {}
         local sr = snap.r[t] or {}
+        local ssp = snap.sp[t] or {}
+        local sm = snap.m[t] or {}
+        tr.start_step = clamp(tonumber(sm.start_step) or tr.start_step or 1, 1, cfg.NUM_STEPS)
+        tr.end_step = clamp(tonumber(sm.end_step) or tr.end_step or cfg.NUM_STEPS, 1, cfg.NUM_STEPS)
+        tr.octave = clamp(tonumber(sm.octave) or tr.octave or 0, -7, 8)
+        tr.arc = deep_copy_table(sm.arc or tr.arc or { pulses = 0, rotation = 1, variance = 0, mode = 1 })
+        self.track_clock_mult[t] = clamp(tonumber(sm.clock_mult) or self.track_clock_mult[t] or 1, 1, 8)
+        self.track_clock_div[t] = clamp(tonumber(sm.clock_div) or self.track_clock_div[t] or 1, 1, 16)
+        self.track_transpose[t] = clamp(tonumber((snap.tt or {})[t]) or self.track_transpose[t] or 0, -96, 96)
         for s = 1, cfg.NUM_STEPS do
             if sg[s] then
                 tr.gates[s] = true
+                tr.vels[s] = clamp(tonumber(sv[s]) or cfg.DEFAULT_VEL_LEVEL, 1, 15)
                 if tc.type == "poly" then
                     local pv = sp[s]
                     if type(pv) == "table" and #pv > 0 then
@@ -2487,8 +2515,12 @@ function App:load_from_slot(slot)
                 end
             end
             if sr[s] then self.ratios[t][s] = deep_copy_table(sr[s]) end
+            if ssp[s] then self.spice[t][s] = deep_copy_table(ssp[s]) end
         end
     end
+    self.key_transpose = clamp(tonumber(snap.key_transpose) or self.key_transpose or 0, -7, 8)
+    self:request_arc_redraw()
+    self:request_redraw()
 end
 
 function App:clear_temp_steps()
