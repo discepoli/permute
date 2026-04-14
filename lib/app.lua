@@ -184,6 +184,7 @@ function App.new()
   for t = 1, cfg.NUM_TRACKS do
     self.tracks[t] = {
       gates = {},
+      ties = {},
       vels = {},
       pitches = {},
       muted = false,
@@ -200,6 +201,7 @@ function App.new()
     }
     for s = 1, cfg.NUM_STEPS do
       self.tracks[t].gates[s] = false
+      self.tracks[t].ties[s] = false
       self.tracks[t].vels[s] = cfg.DEFAULT_VEL_LEVEL
       if self.track_cfg[t].type == "poly" then
         self.tracks[t].pitches[s] = { 1 }
@@ -883,6 +885,7 @@ function App:build_arc_step_cache(track, tr, tc)
     if tr.gates[s] then
       cache[s] = {
         source = "manual",
+        tie = tr.ties and tr.ties[s] or false,
         vel = tr.vels[s],
         pitch = tr.pitches[s]
       }
@@ -1709,6 +1712,40 @@ function App:poly_active_pitches(tr, s)
   return {}
 end
 
+function App:apply_held_gate_span(track, anchor_step, target_step, preserve_step)
+  local t = clamp(tonumber(track) or 1, 1, cfg.NUM_TRACKS)
+  local from_step = clamp(tonumber(anchor_step) or 1, 1, cfg.NUM_STEPS)
+  local to_step = clamp(tonumber(target_step) or 1, 1, cfg.NUM_STEPS)
+  if from_step == to_step then return end
+
+  local tr = self:ensure_track_state(t)
+  local tc = self.track_cfg[t]
+  if not tr or not tc then return end
+
+  local lo = math.min(from_step, to_step)
+  local hi = math.max(from_step, to_step)
+  local src_vel = clamp(tonumber(tr.vels[from_step]) or cfg.DEFAULT_VEL_LEVEL, 1, 15)
+  local src_pitch = tr.pitches[from_step]
+
+  for s = lo, hi do
+    tr.gates[s] = true
+    if not tr.ties then tr.ties = {} end
+    tr.ties[s] = (s ~= from_step)
+    if s ~= preserve_step then
+      tr.vels[s] = src_vel
+      if tc.type == "poly" then
+        if type(src_pitch) == "table" then
+          tr.pitches[s] = deep_copy_table(src_pitch)
+        else
+          tr.pitches[s] = { clamp(tonumber(src_pitch) or 1, 1, 16) }
+        end
+      elseif tc.type ~= "drum" then
+        tr.pitches[s] = clamp(tonumber(src_pitch) or 1, 1, 16)
+      end
+    end
+  end
+end
+
 function App:get_pitch(track, degree, extra_degrees)
   local scale, mode_root = self:get_mode_scale_and_root()
   local base = cfg.DEFAULT_MELODIC_BASE_NOTE
@@ -1727,6 +1764,29 @@ function App:get_pitch(track, degree, extra_degrees)
   return clamp(note, 0, 127)
 end
 
+function App:count_manual_ties_ahead(step, tr, step_cache)
+  if type(step_cache) ~= "table" then return 0 end
+  local order = self:get_track_step_order(tr)
+  local idx_of = {}
+  for i, ordered_step in ipairs(order) do
+    idx_of[ordered_step] = i
+  end
+  local idx = idx_of[step]
+  if not idx then return 0 end
+
+  local tied = 0
+  for i = idx + 1, #order do
+    local next_step = order[i]
+    local next_data = step_cache[next_step]
+    if next_data and next_data.source == "manual" and next_data.tie then
+      tied = tied + 1
+    else
+      break
+    end
+  end
+  return tied
+end
+
 function App:ensure_track_state(t)
   local tr = self.tracks[t]
   local tc = self.track_cfg[t]
@@ -1739,6 +1799,7 @@ function App:ensure_track_state(t)
   tr.solo = not not tr.solo
 
   if not tr.gates then tr.gates = {} end
+  if not tr.ties then tr.ties = {} end
   if not tr.vels then tr.vels = {} end
   if not tr.pitches then tr.pitches = {} end
   if type(tr.arc) ~= "table" then tr.arc = {} end
@@ -1756,6 +1817,8 @@ function App:ensure_track_state(t)
 
   for s = 1, cfg.NUM_STEPS do
     if tr.gates[s] == nil then tr.gates[s] = false end
+    if tr.ties[s] == nil then tr.ties[s] = false end
+    if not tr.gates[s] then tr.ties[s] = false end
     tr.vels[s] = clamp(tonumber(tr.vels[s]) or cfg.DEFAULT_VEL_LEVEL, 1, 15)
     if tc and tc.type == "poly" then
       local pv = tr.pitches[s]
@@ -1952,14 +2015,22 @@ function App:play_tracks(pulse_scale)
       local has_fill = self.fill_active and self.fill_patterns[t][st]
       local step_data = step_cache[st]
       local ratio_allows = step_data and self:step_ratio_allows_play(t, st)
-      local should_play = (step_data and ratio_allows) or has_fill
+      local is_tie_step = step_data and step_data.source == "manual" and step_data.tie and ratio_allows
+      local should_play = ((step_data and ratio_allows and (not is_tie_step or not self.last_notes[t])) or has_fill)
 
-      if self.last_notes[t] then
+      if self.last_notes[t] and not is_tie_step then
         self:note_off_last_for_track(t)
       end
 
       if not tr.muted and should_play then
         local output_ports = self:capture_midi_ports()
+        local note_len_ticks = gate_ticks
+        if step_data and step_data.source == "manual" and not step_data.tie and not has_fill then
+          local tied_ahead = self:count_manual_ties_ahead(st, tr, step_cache)
+          if tied_ahead > 0 then
+            note_len_ticks = gate_ticks + (tied_ahead * cfg.MIDI_CLOCK_TICKS_PER_STEP)
+          end
+        end
         local vel
         if has_fill and not step_data then
           vel = self.fill_patterns[t][st].vel
@@ -1967,13 +2038,13 @@ function App:play_tracks(pulse_scale)
             local note = clamp(tc.note, 0, 127)
             self:midi_note_on(note, self:vel_to_midi(vel), tc.ch, output_ports)
             self:trigger_crow(t, note)
-            self:schedule_note_off(t, note, tc.ch, gate_ticks, output_ports)
+            self:schedule_note_off(t, note, tc.ch, note_len_ticks, output_ports)
             self.last_notes[t] = { note = note, ch = tc.ch, ports = output_ports }
           else
             local note = self:get_pitch(t, self.fill_patterns[t][st].pitch, 0)
             self:midi_note_on(note, self:vel_to_midi(vel), tc.ch, output_ports)
             self:trigger_crow(t, note)
-            self:schedule_note_off(t, note, tc.ch, gate_ticks, output_ports)
+            self:schedule_note_off(t, note, tc.ch, note_len_ticks, output_ports)
             self.last_notes[t] = { note = note, ch = tc.ch, ports = output_ports }
           end
         else
@@ -1982,7 +2053,7 @@ function App:play_tracks(pulse_scale)
             local note = clamp(tc.note, 0, 127)
             self:midi_note_on(note, self:vel_to_midi(vel), tc.ch, output_ports)
             self:trigger_crow(t, note)
-            self:schedule_note_off(t, note, tc.ch, gate_ticks, output_ports)
+            self:schedule_note_off(t, note, tc.ch, note_len_ticks, output_ports)
             self.last_notes[t] = { note = note, ch = tc.ch, ports = output_ports }
           elseif tc.type == "poly" then
             local sp = self.spice[t] and self.spice[t][st]
@@ -1995,7 +2066,7 @@ function App:play_tracks(pulse_scale)
             for _, note in ipairs(chord) do
               self:midi_note_on(note, self:vel_to_midi(vel), tc.ch, output_ports)
               self:trigger_crow(t, note)
-              self:schedule_note_off(t, note, tc.ch, gate_ticks, output_ports)
+              self:schedule_note_off(t, note, tc.ch, note_len_ticks, output_ports)
               notes[#notes + 1] = { note = note, ch = tc.ch, ports = output_ports }
             end
             if #notes > 0 then
@@ -2007,7 +2078,7 @@ function App:play_tracks(pulse_scale)
             local note = self:get_pitch(t, step_data.pitch, spice_offset)
             self:midi_note_on(note, self:vel_to_midi(vel), tc.ch, output_ports)
             self:trigger_crow(t, note)
-            self:schedule_note_off(t, note, tc.ch, gate_ticks, output_ports)
+            self:schedule_note_off(t, note, tc.ch, note_len_ticks, output_ports)
             self.last_notes[t] = { note = note, ch = tc.ch, ports = output_ports }
           end
         end
@@ -3026,7 +3097,7 @@ function App:redraw_screen()
 end
 
 function App:handle_aux_grid_event(x, y, z)
-  if not self.aux_grid_dev or z ~= 1 then return end
+  if not self.aux_grid_dev then return end
   if x < 1 or x > cfg.NUM_STEPS or y < 1 or y > cfg.AUX_GRID_ROWS then return end
 
   local t = clamp(tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
@@ -3034,8 +3105,20 @@ function App:handle_aux_grid_event(x, y, z)
 
   local tr = self:ensure_track_state(t)
   local tc = self.track_cfg[t]
+  local prev_held = self.held
+
+  if z == 0 then
+    if self.held and self.held.aux and self.held.t == t and self.held.s == x then
+      self.held = nil
+    end
+    return
+  end
+  if z ~= 1 then return end
 
   self:push_undo_state()
+  self.held_time = now_ms()
+  self.held = { t = t, s = x, y = y, was_on = tr.gates[x], aux = true }
+  if tr.ties then tr.ties[x] = false end
 
   local ratio_value = nil
   if self.mod_held[cfg.MOD.RATIOS] and tc.type == "drum" then
@@ -3058,6 +3141,7 @@ function App:handle_aux_grid_event(x, y, z)
     local next_vel = self:aux_row_to_vel_level(y)
     if tr.gates[x] and tr.vels[x] == next_vel then
       tr.gates[x] = false
+      if tr.ties then tr.ties[x] = false end
     else
       tr.gates[x] = true
       tr.vels[x] = next_vel
@@ -3072,11 +3156,16 @@ function App:handle_aux_grid_event(x, y, z)
     local next_degree = self:aux_row_to_degree(y)
     if tr.gates[x] and self:get_closest_aux_degree(t, tr.pitches[x]) == next_degree then
       tr.gates[x] = false
+      if tr.ties then tr.ties[x] = false end
     else
       tr.gates[x] = true
       tr.vels[x] = clamp(tonumber(tr.vels[x]) or cfg.DEFAULT_VEL_LEVEL, 1, 15)
       tr.pitches[x] = next_degree
     end
+  end
+
+  if prev_held and prev_held.aux and prev_held.t == t and prev_held.s ~= x and not self:any_mod_active() then
+    self:apply_held_gate_span(t, prev_held.s, x, x)
   end
 
   if ratio_value then self:flash_mod_applied(cfg.MOD.RATIOS, ratio_value) end
@@ -3104,11 +3193,13 @@ function App:handle_main_grid_event(x, y, z)
       self.sel_track = t
       local tr = self.tracks[t]
       local tc = self.track_cfg[t]
+      local prev_held = self.held
 
       if z == 1 then
         self:push_undo_state()
         self.held_time = now_ms()
-        self.held = { t = t, s = x, y = y, was_on = tr.gates[x] }
+        self.held = { t = t, s = x, y = y, was_on = tr.gates[x], aux = false }
+        if tr.ties then tr.ties[x] = false end
 
         local applied_mod = self:get_active_mod_id()
         local applied_value = nil
@@ -3232,6 +3323,9 @@ function App:handle_main_grid_event(x, y, z)
             else tr.gates[x] = true tr.pitches[x] = degree tr.vels[x] = cfg.DEFAULT_VEL_LEVEL end
           end
         end
+        if prev_held and not prev_held.aux and prev_held.t == t and prev_held.s ~= x and not self:any_mod_active() then
+          self:apply_held_gate_span(t, prev_held.s, x, x)
+        end
 
         if applied_mod then
           self:flash_mod_applied(applied_mod, applied_value or self:get_active_mod_value(applied_mod))
@@ -3264,6 +3358,7 @@ function App:handle_main_grid_event(x, y, z)
 
   local t = self:row_to_track(y)
   if t and t >= 1 and t <= cfg.NUM_TRACKS then
+    local prev_held = self.held
     if z == 1 then
       self:push_undo_state()
       self.held_time = now_ms()
@@ -3306,7 +3401,8 @@ function App:handle_main_grid_event(x, y, z)
         end
         self.sel_track = t
       elseif self:mod_active(cfg.MOD.TEMP) then
-        self.held = { t = t, s = x, y = y, was_on = self.tracks[t].gates[x] }
+        self.held = { t = t, s = x, y = y, was_on = self.tracks[t].gates[x], aux = false }
+        if self.tracks[t].ties then self.tracks[t].ties[x] = false end
         if not self.tracks[t].gates[x] then
           self.tracks[t].gates[x] = true
           self.tracks[t].vels[x] = cfg.DEFAULT_VEL_LEVEL
@@ -3319,12 +3415,16 @@ function App:handle_main_grid_event(x, y, z)
       elseif self:any_mod_active() then
         self.sel_track = t
       else
-        self.held = { t = t, s = x, y = y, was_on = self.tracks[t].gates[x] }
+        self.held = { t = t, s = x, y = y, was_on = self.tracks[t].gates[x], aux = false }
+        if self.tracks[t].ties then self.tracks[t].ties[x] = false end
         if not self.tracks[t].gates[x] then
           self.tracks[t].gates[x] = true
           self.tracks[t].vels[x] = cfg.DEFAULT_VEL_LEVEL
           if self.track_cfg[t].type == "poly" and type(self.tracks[t].pitches[x]) ~= "table" then self.tracks[t].pitches[x] = { 1 } end
         end
+      end
+      if prev_held and not prev_held.aux and prev_held.t == t and prev_held.s ~= x and not self:any_mod_active() then
+        self:apply_held_gate_span(t, prev_held.s, x, x)
       end
       if self:any_mod_active() then
         local mod_id = self:get_active_mod_id()
