@@ -44,7 +44,7 @@ function M.setup(app)
     local prev_action_read = params.action_read
     local prev_action_delete = params.action_delete
 
-    params:add_group("permute_seq", "permute", 34)
+    params:add_group("permute_seq", "permute", 35)
 
     params:add_option("permute_scale", "scale", SCALE_NAMES, 2)
     params:set_action("permute_scale", function(v)
@@ -193,6 +193,13 @@ function M.setup(app)
     params:add_number("permute_redraw_fps", "redraw fps", 10, 60, 60)
     params:set_action("permute_redraw_fps", function(v)
         app:redraw_rate(v)
+    end)
+
+    params:add_option("permute_screen_orientation", "screen orientation", { "normal", "cw90" }, 1)
+    params:set_action("permute_screen_orientation", function(v)
+        local opts = { "normal", "cw90" }
+        app.screen_orientation = opts[v] or "normal"
+        app:request_redraw()
     end)
 
     params:add_option("permute_beat_repeat_mode", "b. repeat mode", BEAT_REPEAT_MODES, 1)

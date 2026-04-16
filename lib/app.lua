@@ -99,6 +99,7 @@ function App.new()
     self.last_redraw_time = 0
     self.redraw_min_ms = 20
     self.redraw_deferred = false
+    self.screen_orientation = "normal"
 
     self.track_steps = {}
     self.track_clock_div = {}
@@ -224,7 +225,7 @@ function App.new()
         self.spice[t] = {}
         self.track_transpose[t] = 0
         self.track_gate_ticks[t] = (self.track_cfg[t].type == "drum") and self.drum_gate_clocks or
-        self.melody_gate_clocks
+            self.melody_gate_clocks
     end
 
     return self
@@ -269,6 +270,7 @@ function App:default_setup_param_ids()
         "permute_crow_track_1",
         "permute_crow_track_2",
         "permute_redraw_fps",
+        "permute_screen_orientation",
         "permute_beat_repeat_mode",
         "permute_beat_repeat_direction",
         "permute_temp_button_mode",
@@ -426,6 +428,37 @@ function App:set_spice_accum_bounds(min_v, max_v)
     self.spice_accum_max = hi
 end
 
+function App:get_screen_rotation_quadrants()
+    return 0
+end
+
+function App:get_active_screen_orientation()
+    local mode = self.screen_orientation or "normal"
+    if params and params.get then
+        local ok, idx = pcall(function() return params:get("permute_screen_orientation") end)
+        if ok then
+            mode = (tonumber(idx) == 2) and "cw90" or "normal"
+        end
+    end
+    return mode
+end
+
+function App:is_screen_rotated_90()
+    return false
+end
+
+function App:get_screen_canvas_size()
+    return 128, 64
+end
+
+function App:apply_screen_transform()
+    return
+end
+
+function App:reset_screen_transform()
+    return
+end
+
 function App:capture_default_setup_values()
     local values = {}
     for _, id in ipairs(self:default_setup_param_ids()) do
@@ -561,6 +594,7 @@ function App:export_state()
         spice_accum_min = self.spice_accum_min,
         spice_accum_max = self.spice_accum_max,
         scale_type = self.scale_type,
+        screen_orientation = self.screen_orientation,
         key_root = self.key_root,
         key_transpose = self.key_transpose,
         scale_degree = self.scale_degree,
@@ -587,8 +621,10 @@ function App:import_state(state)
     if type(state.ratios) == "table" then self.ratios = deep_copy_table(state.ratios) end
     if type(state.spice) == "table" then self.spice = deep_copy_table(state.spice) end
     if type(state.save_slots) == "table" then self.save_slots = deep_copy_table(state.save_slots) end
-    if type(state.beat_repeat_excluded) == "table" then self.beat_repeat_excluded = deep_copy_table(state
-        .beat_repeat_excluded) end
+    if type(state.beat_repeat_excluded) == "table" then
+        self.beat_repeat_excluded = deep_copy_table(state
+            .beat_repeat_excluded)
+    end
 
     self.beat_repeat_len = tonumber(state.beat_repeat_len) or 0
     self.beat_repeat_mode = state.beat_repeat_mode or self.beat_repeat_mode
@@ -599,6 +635,7 @@ function App:import_state(state)
     if state.send_midi_start_stop_out ~= nil then self.send_midi_start_stop_out = not not state.send_midi_start_stop_out end
     self:set_spice_accum_bounds(state.spice_accum_min, state.spice_accum_max)
     self.scale_type = state.scale_type or self.scale_type
+    self.screen_orientation = (state.screen_orientation == "cw90") and "cw90" or "normal"
     self.key_root = clamp(tonumber(state.key_root) or self.key_root or 0, 0, 11)
     self.key_transpose = clamp(tonumber(state.key_transpose) or self.key_transpose or 0, -7, 8)
     self.scale_degree = clamp(tonumber(state.scale_degree) or self.scale_degree or 1, 1, 7)
@@ -625,7 +662,7 @@ function App:import_state(state)
         if not self.track_transpose[t] then self.track_transpose[t] = 0 end
         if not self.track_gate_ticks[t] then
             self.track_gate_ticks[t] = (self.track_cfg[t].type == "drum") and self.drum_gate_clocks or
-            self.melody_gate_clocks
+                self.melody_gate_clocks
         end
         self.track_gate_ticks[t] = clamp(tonumber(self.track_gate_ticks[t]) or 1, 1, 24)
         if not self.fill_patterns[t] then self.fill_patterns[t] = {} end
@@ -1178,9 +1215,10 @@ function App:get_active_mod_value(mod_id)
 end
 
 function App:draw_big_center_text(line1, line2, invert)
+    local w, h = self:get_screen_canvas_size()
     if invert then
         screen.level(15)
-        screen.rect(0, 0, 128, 64)
+        screen.rect(0, 0, w, h)
         screen.fill()
         screen.level(0)
     else
@@ -1193,7 +1231,7 @@ function App:draw_big_center_text(line1, line2, invert)
         screen.font_size(s)
         local w1 = screen.text_extents(line1 or "")
         local w2 = line2 and screen.text_extents(line2) or 0
-        if math.max(w1, w2) <= 124 then
+        if math.max(w1, w2) <= (w - 4) then
             picked = s
             break
         end
@@ -1201,18 +1239,18 @@ function App:draw_big_center_text(line1, line2, invert)
 
     screen.font_size(picked)
     if line2 and line2 ~= "" then
-        local y1 = 26
-        local y2 = 50
+        local y1 = (h > 64) and 44 or 26
+        local y2 = (h > 64) and 80 or 50
         local w1 = screen.text_extents(line1)
         local w2 = screen.text_extents(line2)
-        screen.move(math.floor((128 - w1) / 2), y1)
+        screen.move(math.floor((w - w1) / 2), y1)
         screen.text(line1)
-        screen.move(math.floor((128 - w2) / 2), y2)
+        screen.move(math.floor((w - w2) / 2), y2)
         screen.text(line2)
     else
-        local y = 38
-        local w = screen.text_extents(line1)
-        screen.move(math.floor((128 - w) / 2), y)
+        local y = math.floor(h * 0.55)
+        local tw = screen.text_extents(line1)
+        screen.move(math.floor((w - tw) / 2), y)
         screen.text(line1)
     end
     screen.font_size(8)
@@ -1261,17 +1299,20 @@ end
 
 function App:draw_special_icon_screen(name, label, value, invert)
     if not name then return false end
+    local w, h = self:get_screen_canvas_size()
 
     local fg = invert and 0 or 15
     local dim = invert and 4 or 6
 
     if invert then
         screen.level(15)
-        screen.rect(0, 0, 128, 64)
+        screen.rect(0, 0, w, h)
         screen.fill()
     end
 
-    local drew = icons.draw_special(name, 64, 24, fg, dim, self:mod_icon_state())
+    local icon_cx = math.floor(w / 2)
+    local icon_cy = (h > 64) and 34 or 24
+    local drew = icons.draw_special(name, icon_cx, icon_cy, fg, dim, self:mod_icon_state())
     if not drew then return false end
 
     screen.level(fg)
@@ -1282,14 +1323,16 @@ function App:draw_special_icon_screen(name, label, value, invert)
         local val = tostring(value)
         local tw = screen.text_extents(title)
         local vw = screen.text_extents(val)
-        screen.move(math.floor((128 - tw) / 2), 54)
+        local y1 = h - 14
+        local y2 = h - 5
+        screen.move(math.floor((w - tw) / 2), y1)
         screen.text(title)
-        screen.move(math.floor((128 - vw) / 2), 63)
+        screen.move(math.floor((w - vw) / 2), y2)
         screen.text(val)
     else
         local text = label or ""
-        local w = screen.text_extents(text)
-        screen.move(math.floor((128 - w) / 2), 58)
+        local tw = screen.text_extents(text)
+        screen.move(math.floor((w - tw) / 2), h - 10)
         screen.text(text)
     end
 
@@ -1298,17 +1341,20 @@ end
 
 function App:draw_mod_icon_screen(mod_id, label, value, invert)
     if not mod_id then return false end
+    local w, h = self:get_screen_canvas_size()
 
     local fg = invert and 0 or 15
     local dim = invert and 4 or 6
 
     if invert then
         screen.level(15)
-        screen.rect(0, 0, 128, 64)
+        screen.rect(0, 0, w, h)
         screen.fill()
     end
 
-    local drew = icons.draw(mod_id, 64, 24, fg, dim, self:mod_icon_state())
+    local icon_cx = math.floor(w / 2)
+    local icon_cy = (h > 64) and 34 or 24
+    local drew = icons.draw(mod_id, icon_cx, icon_cy, fg, dim, self:mod_icon_state())
     if not drew then return false end
 
     screen.level(fg)
@@ -1319,14 +1365,16 @@ function App:draw_mod_icon_screen(mod_id, label, value, invert)
         local val = tostring(value)
         local tw = screen.text_extents(title)
         local vw = screen.text_extents(val)
-        screen.move(math.floor((128 - tw) / 2), 54)
+        local y1 = h - 14
+        local y2 = h - 5
+        screen.move(math.floor((w - tw) / 2), y1)
         screen.text(title)
-        screen.move(math.floor((128 - vw) / 2), 63)
+        screen.move(math.floor((w - vw) / 2), y2)
         screen.text(val)
     else
         local text = label or ""
-        local w = screen.text_extents(text)
-        screen.move(math.floor((128 - w) / 2), 58)
+        local tw = screen.text_extents(text)
+        screen.move(math.floor((w - tw) / 2), h - 10)
         screen.text(text)
     end
 
@@ -2024,7 +2072,8 @@ end
 function App:audition_realtime_tap(track, tc, velocity_level, degree)
     local output_ports = self:capture_midi_ports()
     local gate_ticks = clamp(
-    tonumber(self.track_gate_ticks[track]) or ((tc.type == "drum") and self.drum_gate_clocks or self.melody_gate_clocks),
+        tonumber(self.track_gate_ticks[track]) or
+        ((tc.type == "drum") and self.drum_gate_clocks or self.melody_gate_clocks),
         1, 24)
 
     if tc.type == "drum" then
@@ -2202,8 +2251,8 @@ function App:play_tracks(pulse_scale)
         for _ = 1, hits do
             local st = self:get_track_step(t)
             local gate_ticks = clamp(
-            tonumber(self.track_gate_ticks[t]) or
-            ((tc.type == "drum") and self.drum_gate_clocks or self.melody_gate_clocks), 1, 24)
+                tonumber(self.track_gate_ticks[t]) or
+                ((tc.type == "drum") and self.drum_gate_clocks or self.melody_gate_clocks), 1, 24)
             local has_fill = self.fill_active and self.fill_patterns[t][st]
             local step_data = step_cache[st]
             local ratio_allows = step_data and self:step_ratio_allows_play(t, st)
@@ -2794,8 +2843,12 @@ function App:draw_takeover()
                 self:grid_led(s, row, lv)
                 self:grid_led(s, takeover_rows, math.max((s == current_step and self.playing) and 4 or 1, 3))
             else
-                if s == current_step and self.playing then self:grid_led(s, takeover_rows, 4) elseif in_range then self
-                        :grid_led(s, takeover_rows, 1) end
+                if s == current_step and self.playing then
+                    self:grid_led(s, takeover_rows, 4)
+                elseif in_range then
+                    self
+                        :grid_led(s, takeover_rows, 1)
+                end
             end
         end
     else
@@ -2817,8 +2870,12 @@ function App:draw_takeover()
                 local is_on = false
                 local is_fill = false
                 if step_data then
-                    if tc.type == "poly" then is_on = self:poly_has_pitch(step_data.pitch, degree) else is_on = clamp(
-                        tonumber(step_data.pitch) or 1, 1, takeover_rows) == degree end
+                    if tc.type == "poly" then
+                        is_on = self:poly_has_pitch(step_data.pitch, degree)
+                    else
+                        is_on = clamp(
+                            tonumber(step_data.pitch) or 1, 1, takeover_rows) == degree
+                    end
                 elseif fill_degree then
                     is_fill = degree == fill_degree
                 end
@@ -3241,10 +3298,112 @@ function App:apply_screen_update()
     screen.update()
 end
 
+function App:redraw_screen_cw90(now, active_mod_name)
+    local live_main = self.realtime_play_mode
+    if live_main then
+        screen.level(15)
+        screen.rect(0, 0, 128, 64)
+        screen.fill()
+    end
+
+    local fg = live_main and 0 or 15
+    local dim = live_main and 4 or 6
+    screen.font_size(8)
+    local col = 7
+    local top_pad = 3
+    local function row(text, level)
+        local str = text or ""
+        screen.level(live_main and 0 or (level or 15))
+        screen.text_rotate(col, top_pad, str, 90)
+        col = col + 10
+    end
+
+    local function draw_rotated_icon(draw_fn)
+        if not draw_fn then return end
+        if screen.save and screen.restore and screen.translate and screen.rotate then
+            screen.save()
+            screen.translate(108, 32)
+            screen.rotate(math.rad(90))
+            draw_fn(0, 0)
+            screen.restore()
+        else
+            draw_fn(108, 32)
+        end
+    end
+
+    local title = self.realtime_play_mode and "permute - live (cw90)" or "permute - cw90"
+    row(title, 15)
+
+    if self.status_message then
+        local override_name, _, _ = self:get_mod_screen_override()
+        if override_name then
+            draw_rotated_icon(function(cx, cy)
+                icons.draw_special(override_name, cx, cy, fg, dim, self:mod_icon_state())
+            end)
+        else
+            local mod_id = self.status_mod_id or self:mod_id_from_name(self.status_message)
+            if mod_id then
+                draw_rotated_icon(function(cx, cy)
+                    icons.draw(mod_id, cx, cy, fg, dim, self:mod_icon_state())
+                end)
+            end
+        end
+        row("status: " .. tostring(self.status_message), 12)
+        if self.status_value then row("value: " .. tostring(self.status_value), 10) end
+    elseif active_mod_name then
+        local active_mod_id = self:get_active_mod_id()
+        local mod_value = self:get_active_mod_value(active_mod_id)
+        if active_mod_id then
+            draw_rotated_icon(function(cx, cy)
+                icons.draw(active_mod_id, cx, cy, fg, dim, self:mod_icon_state())
+            end)
+        end
+        row("mod: " .. tostring(active_mod_name), 12)
+        if mod_value ~= nil then row("value: " .. tostring(mod_value), 10) end
+    elseif self.held then
+        local t = self.held.t
+        local s = self.held.s
+        local tr = self.tracks[t]
+        local tc = self.track_cfg[t]
+        row("hold T" .. tostring(t) .. " S" .. tostring(s), 12)
+        row("ch: " .. tostring(tc.ch), 10)
+        if tc.type == "drum" then
+            row("vel: " .. tostring(tr.vels[s]), 10)
+        elseif tc.type == "poly" then
+            local labels = {}
+            for _, d in ipairs(tr.pitches[s]) do
+                local n = self:get_pitch(t, d, 0)
+                labels[#labels + 1] = self:note_label(n)
+            end
+            row("notes:", 10)
+            row(table.concat(labels, " "), 10)
+        else
+            local degree = tr.pitches[s]
+            local n = self:get_pitch(t, degree, 0)
+            row("pitch: " .. tostring(degree), 10)
+            row(self:note_label(n), 10)
+        end
+    else
+        row("state: " .. (self.playing and "playing" or "stopped"), 10)
+        row("tempo: " .. string.format("%d", self.tempo_bpm), 10)
+        row("scale: " .. tostring(self.scale_type), 10)
+        local sel = self.sel_track and tostring(self.sel_track) or "-"
+        row("track: " .. sel, 10)
+        row("clock: " .. (self.use_midi_clock and "midi" or "internal"), 10)
+    end
+end
+
 function App:redraw_screen()
-    if self:is_menu_active() then return end
+    if self:is_menu_active() then
+        self:reset_screen_transform()
+        return
+    end
+    self:apply_screen_transform()
+    local screen_orientation = self:get_active_screen_orientation()
+    self.screen_orientation = screen_orientation
     local now = util.time() or 0
     local active_mod_name = self:get_active_mod_name()
+    local w, h = self:get_screen_canvas_size()
 
     if self.status_message and now > self.status_message_until then
         self.status_message = nil
@@ -3254,6 +3413,13 @@ function App:redraw_screen()
     end
 
     screen.clear()
+    if screen_orientation == "cw90" then
+        self:redraw_screen_cw90(now, active_mod_name)
+        self:apply_screen_update()
+        self.screen_dirty = false
+        return
+    end
+
     if self.status_message then
         local override_name, override_label, _ = self:get_mod_screen_override()
         if override_name then
@@ -3324,28 +3490,47 @@ function App:redraw_screen()
         local live_main = self.realtime_play_mode
         if live_main then
             screen.level(15)
-            screen.rect(0, 0, 128, 64)
+            screen.rect(0, 0, w, h)
             screen.fill()
             screen.level(0)
         else
             screen.level(15)
         end
-        screen.move(0, 12)
-        screen.text(self.realtime_play_mode and "permute - live" or "permute")
+        if self.screen_orientation == "cw90" then
+            local y1, y2, y3, y4, y5, y6 = 10, 20, 30, 40, 50, 60
+            screen.move(0, y1)
+            screen.text(self.realtime_play_mode and "permute - live" or "permute")
+            screen.level(live_main and 0 or 10)
+            screen.move(0, y2)
+            screen.text("state: " .. (self.playing and "playing" or "stopped"))
+            screen.move(0, y3)
+            screen.text("tempo: " .. string.format("%d", self.tempo_bpm))
+            screen.move(0, y4)
+            screen.text("scale: " .. self.scale_type)
+            screen.move(0, y5)
+            local sel = self.sel_track and tostring(self.sel_track) or "-"
+            screen.text("track: " .. sel)
+            screen.move(0, y6)
+            screen.text("clock: " .. (self.use_midi_clock and "midi" or "internal"))
+        else
+            local y1, y2, y3, y4, y5 = 12, 24, 34, 44, 54
+            screen.move(0, y1)
+            screen.text(self.realtime_play_mode and "permute - live" or "permute")
 
-        screen.level(live_main and 0 or 10)
-        screen.move(0, 24)
-        screen.text("state: " .. (self.playing and "playing" or "stopped"))
+            screen.level(live_main and 0 or 10)
+            screen.move(0, y2)
+            screen.text("state: " .. (self.playing and "playing" or "stopped"))
 
-        screen.move(0, 34)
-        screen.text("tempo: " .. string.format("%d", self.tempo_bpm) .. "  scale: " .. self.scale_type)
+            screen.move(0, y3)
+            screen.text("tempo: " .. string.format("%d", self.tempo_bpm) .. "  scale: " .. self.scale_type)
 
-        screen.move(0, 44)
-        local sel = self.sel_track and tostring(self.sel_track) or "-"
-        screen.text("track: " .. sel)
+            screen.move(0, y4)
+            local sel = self.sel_track and tostring(self.sel_track) or "-"
+            screen.text("track: " .. sel)
 
-        screen.move(0, 54)
-        screen.text("clock: " .. (self.use_midi_clock and "midi" or "internal"))
+            screen.move(0, y5)
+            screen.text("clock: " .. (self.use_midi_clock and "midi" or "internal"))
+        end
     end
 
     self:apply_screen_update()
@@ -3552,7 +3737,7 @@ function App:handle_main_grid_event(x, y, z)
                             pitch = (tc.type == "drum") and fp or fill_pitch
                         }
                         applied_value = (tc.type == "drum") and ("vel " .. tostring(fill_vel)) or
-                        ("deg " .. tostring(fill_pitch))
+                            ("deg " .. tostring(fill_pitch))
                     end
                 elseif self:mod_active(cfg.MOD.TEMP) then
                     ensure_push()
@@ -3984,6 +4169,7 @@ end
 
 function App:cleanup()
     self:stop()
+    self:reset_screen_transform()
     if self.grid_timer then self.grid_timer:stop() end
     if self.arc_dev then
         self.arc_dev:all(0)
