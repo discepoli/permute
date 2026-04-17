@@ -276,7 +276,7 @@ function M.setup(app)
         local tc = app.track_cfg[track]
         local gid = "permute_track_" .. track
 
-        params:add_group(gid, "track " .. track .. " config", 4)
+        params:add_group(gid, "track " .. track .. " config", 5)
 
         local type_idx = 1
         for i, v in ipairs(TRACK_TYPES) do
@@ -309,6 +309,13 @@ function M.setup(app)
             local next_note = clamp(tonumber(v) or current_tc.note, 0, 127)
             if app.push_undo_state and current_tc.note ~= next_note then app:push_undo_state() end
             current_tc.note = next_note
+        end)
+
+        params:add_number(gid .. "_vel", "default velocity", 0, 127, app:get_track_default_midi_velocity(track))
+        params:set_action(gid .. "_vel", function(v)
+            local next_vel = clamp(tonumber(v) or app:get_track_default_midi_velocity(track), 0, 127)
+            if app.push_undo_state and app.track_default_vel and app.track_default_vel[track] ~= next_vel then app:push_undo_state() end
+            app.track_default_vel[track] = next_vel
         end)
 
         params:add_number(gid .. "_len", "default note length", 1, 24, app.track_gate_ticks[track])

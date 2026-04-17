@@ -135,6 +135,7 @@ function App.new()
     self.spice_accum_min = cfg.SPICE_MIN
     self.spice_accum_max = cfg.SPICE_MAX
     self.track_transpose = {}
+    self.track_default_vel = {}
     self.track_gate_ticks = {}
     self.undo_stack = {}
     self.redo_stack = {}
@@ -224,6 +225,7 @@ function App.new()
         self.ratios[t] = {}
         self.spice[t] = {}
         self.track_transpose[t] = 0
+        self.track_default_vel[t] = self:vel_to_midi(cfg.DEFAULT_VEL_LEVEL)
         self.track_gate_ticks[t] = (self.track_cfg[t].type == "drum") and self.drum_gate_clocks or
             self.melody_gate_clocks
     end
@@ -285,6 +287,7 @@ function App:default_setup_param_ids()
         ids[#ids + 1] = gid .. "_type"
         ids[#ids + 1] = gid .. "_ch"
         ids[#ids + 1] = gid .. "_note"
+        ids[#ids + 1] = gid .. "_vel"
         ids[#ids + 1] = gid .. "_len"
     end
 
@@ -319,6 +322,7 @@ function App:import_track_cfg(track_cfg, sync_params)
                 pcall(function() params:set(gid .. "_type", type_idx) end)
                 pcall(function() params:set(gid .. "_ch", clamp(tonumber(tc.ch) or 1, 1, 16)) end)
                 pcall(function() params:set(gid .. "_note", clamp(tonumber(tc.note) or 60, 0, 127)) end)
+                pcall(function() params:set(gid .. "_vel", self:get_track_default_midi_velocity(t)) end)
             end
         end
         self.suspend_history = was_suspended
@@ -339,6 +343,10 @@ function App:sync_track_cfg_from_params()
             ch = clamp(tonumber(params:get(gid .. "_ch")) or 1, 1, 16),
             note = clamp(tonumber(params:get(gid .. "_note")) or 60, 0, 127)
         }
+        local ok_vel, loaded_vel = pcall(function() return params:get(gid .. "_vel") end)
+        if ok_vel and loaded_vel ~= nil then
+            self.track_default_vel[t] = clamp(tonumber(loaded_vel) or self:get_track_default_midi_velocity(t), 0, 127)
+        end
     end
 
     self:import_track_cfg(track_cfg, false)
@@ -1690,6 +1698,21 @@ function App:vel_to_midi(level)
     return clamp(level * 8 + 1, 1, 127)
 end
 
+function App:midi_to_vel_level(velocity)
+    local midi_vel = clamp(tonumber(velocity) or self:vel_to_midi(cfg.DEFAULT_VEL_LEVEL), 0, 127)
+    return clamp(math.floor(((midi_vel - 1) / 8) + 0.5), 1, 15)
+end
+
+function App:get_track_default_midi_velocity(track)
+    local t = clamp(tonumber(track) or 1, 1, cfg.NUM_TRACKS)
+    local fallback = self:vel_to_midi(cfg.DEFAULT_VEL_LEVEL)
+    return clamp(tonumber((self.track_default_vel or {})[t]) or fallback, 0, 127)
+end
+
+function App:get_track_default_vel_level(track)
+    return self:midi_to_vel_level(self:get_track_default_midi_velocity(track))
+end
+
 function App:is_aux_grid_device(dev)
     local device = dev and dev.device
     return device
@@ -2112,7 +2135,7 @@ function App:handle_realtime_play_event(track, x, z)
 
     if tr.ties then tr.ties[step] = false end
     tr.gates[step] = true
-    tr.vels[step] = cfg.DEFAULT_VEL_LEVEL
+    tr.vels[step] = self:get_track_default_vel_level(t)
 
     if tc.type == "drum" then
         local vel = self:main_x_to_realtime_velocity(x)
@@ -2128,11 +2151,11 @@ function App:handle_realtime_play_event(track, x, z)
         table.sort(chord)
         if #chord == 0 then chord[1] = clamp(tonumber(x) or 1, 1, 16) end
         tr.pitches[step] = chord
-        self:audition_realtime_tap(t, tc, cfg.DEFAULT_VEL_LEVEL, clamp(tonumber(x) or 1, 1, 16))
+        self:audition_realtime_tap(t, tc, self:get_track_default_vel_level(t), clamp(tonumber(x) or 1, 1, 16))
     else
         local degree = clamp(tonumber(x) or 1, 1, 16)
         tr.pitches[step] = degree
-        self:audition_realtime_tap(t, tc, cfg.DEFAULT_VEL_LEVEL, degree)
+        self:audition_realtime_tap(t, tc, self:get_track_default_vel_level(t), degree)
     end
 
     self:request_arc_redraw()
@@ -2445,7 +2468,7 @@ function App:apply_random_notes(track, amount)
             local shift = math.random(0, amount)
             if math.random(1, 2) == 1 then shift = -shift end
             if is_drum then
-                tr.vels[s] = clamp(cfg.DEFAULT_VEL_LEVEL + shift, 1, 15)
+                tr.vels[s] = clamp(self:get_track_default_vel_level(track) + shift, 1, 15)
             elseif tc.type == "poly" then
                 for i, _ in ipairs(tr.pitches[s]) do
                     local p_shift = math.random(0, amount)
@@ -2469,7 +2492,7 @@ function App:apply_random_steps(track, density)
     for _ = 1, fill_count do
         local s = math.random(lo, hi)
         tr.gates[s] = true
-        tr.vels[s] = cfg.DEFAULT_VEL_LEVEL
+        tr.vels[s] = self:get_track_default_vel_level(track)
         if self.track_cfg[track].type == "poly" then
             if type(tr.pitches[s]) ~= "table" or #tr.pitches[s] == 0 then tr.pitches[s] = { 1 } end
         elseif tr.pitches[s] == 0 then
@@ -2532,7 +2555,7 @@ function App:load_from_slot(slot)
         self.spice[t] = {}
         for s = 1, cfg.NUM_STEPS do
             tr.gates[s] = false
-            tr.vels[s] = cfg.DEFAULT_VEL_LEVEL
+            tr.vels[s] = self:get_track_default_vel_level(t)
             if tc.type == "poly" then tr.pitches[s] = { 1 } else tr.pitches[s] = 1 end
         end
         local sg = snap.g[t] or {}
@@ -2576,7 +2599,7 @@ function App:clear_temp_steps()
     for t, steps in pairs(self.temp_steps) do
         for s, _ in pairs(steps) do
             self.tracks[t].gates[s] = false
-            self.tracks[t].vels[s] = cfg.DEFAULT_VEL_LEVEL
+            self.tracks[t].vels[s] = self:get_track_default_vel_level(t)
             if self.track_cfg[t].type == "poly" then self.tracks[t].pitches[s] = { 1 } else self.tracks[t].pitches[s] = 1 end
         end
     end
@@ -2605,7 +2628,7 @@ function App:clear_track(t)
     for s = 1, cfg.NUM_STEPS do
         self.tracks[t].gates[s] = false
         if self.track_cfg[t].type == "poly" then self.tracks[t].pitches[s] = { 1 } else self.tracks[t].pitches[s] = 1 end
-        self.tracks[t].vels[s] = cfg.DEFAULT_VEL_LEVEL
+        self.tracks[t].vels[s] = self:get_track_default_vel_level(t)
     end
     self.fill_patterns[t] = {}
     self.ratios[t] = {}
@@ -3570,12 +3593,12 @@ function App:handle_aux_grid_event(x, y, z)
         tr.pitches[x] = self:poly_toggle_aux_degree(t, self:poly_active_pitches(tr, x), self:aux_row_to_degree(y))
         tr.gates[x] = (#tr.pitches[x] > 0)
         if tr.gates[x] then
-            tr.vels[x] = clamp(tonumber(tr.vels[x]) or cfg.DEFAULT_VEL_LEVEL, 1, 15)
+            tr.vels[x] = clamp(tonumber(tr.vels[x]) or self:get_track_default_vel_level(t), 1, 15)
             ratio_value = self:apply_pending_ratio_to_step(t, x)
         end
     elseif self.mod_held[cfg.MOD.RATIOS] then
         tr.gates[x] = true
-        tr.vels[x] = clamp(tonumber(tr.vels[x]) or cfg.DEFAULT_VEL_LEVEL, 1, 15)
+        tr.vels[x] = clamp(tonumber(tr.vels[x]) or self:get_track_default_vel_level(t), 1, 15)
         tr.pitches[x] = self:aux_row_to_degree(y)
         ratio_value = self:apply_pending_ratio_to_step(t, x)
     elseif tc.type == "drum" then
@@ -3591,7 +3614,7 @@ function App:handle_aux_grid_event(x, y, z)
         tr.pitches[x] = self:poly_toggle_aux_degree(t, self:poly_active_pitches(tr, x), self:aux_row_to_degree(y))
         tr.gates[x] = (#tr.pitches[x] > 0)
         if tr.gates[x] then
-            tr.vels[x] = clamp(tonumber(tr.vels[x]) or cfg.DEFAULT_VEL_LEVEL, 1, 15)
+            tr.vels[x] = clamp(tonumber(tr.vels[x]) or self:get_track_default_vel_level(t), 1, 15)
         end
     else
         local next_degree = self:aux_row_to_degree(y)
@@ -3600,7 +3623,7 @@ function App:handle_aux_grid_event(x, y, z)
             if tr.ties then tr.ties[x] = false end
         else
             tr.gates[x] = true
-            tr.vels[x] = clamp(tonumber(tr.vels[x]) or cfg.DEFAULT_VEL_LEVEL, 1, 15)
+            tr.vels[x] = clamp(tonumber(tr.vels[x]) or self:get_track_default_vel_level(t), 1, 15)
             tr.pitches[x] = next_degree
         end
     end
@@ -3710,12 +3733,12 @@ function App:handle_main_grid_event(x, y, z)
                         tr.pitches[x] = self:poly_toggle_pitch(self:poly_active_pitches(tr, x), degree)
                         tr.gates[x] = (#tr.pitches[x] > 0)
                         if tr.gates[x] then
-                            tr.vels[x] = clamp(tonumber(tr.vels[x]) or cfg.DEFAULT_VEL_LEVEL, 1, 15)
+                            tr.vels[x] = clamp(tonumber(tr.vels[x]) or self:get_track_default_vel_level(t), 1, 15)
                         end
                     else
                         tr.gates[x] = true
                         tr.pitches[x] = degree
-                        tr.vels[x] = clamp(tonumber(tr.vels[x]) or cfg.DEFAULT_VEL_LEVEL, 1, 15)
+                        tr.vels[x] = clamp(tonumber(tr.vels[x]) or self:get_track_default_vel_level(t), 1, 15)
                     end
                     if tr.gates[x] then
                         applied_value = self:apply_pending_ratio_to_step(t, x)
@@ -3733,7 +3756,7 @@ function App:handle_main_grid_event(x, y, z)
                         local fp = tr.pitches[x] or 1
                         if type(fp) == "table" then fp = fp[1] or 1 end
                         self.fill_patterns[t][x] = {
-                            vel = (tc.type == "drum") and fill_vel or cfg.DEFAULT_VEL_LEVEL,
+                            vel = (tc.type == "drum") and fill_vel or self:get_track_default_vel_level(t),
                             pitch = (tc.type == "drum") and fp or fill_pitch
                         }
                         applied_value = (tc.type == "drum") and ("vel " .. tostring(fill_vel)) or
@@ -3746,7 +3769,7 @@ function App:handle_main_grid_event(x, y, z)
                     local was_off = not tr.gates[x]
                     if not tr.gates[x] then
                         tr.gates[x] = true
-                        tr.vels[x] = cfg.DEFAULT_VEL_LEVEL
+                        tr.vels[x] = self:get_track_default_vel_level(t)
                         if tc.type == "poly" and type(tr.pitches[x]) ~= "table" then tr.pitches[x] = { 1 } end
                     end
 
@@ -3778,7 +3801,7 @@ function App:handle_main_grid_event(x, y, z)
                             tr.gates[x] = false
                         else
                             tr.gates[x] = true
-                            tr.vels[x] = cfg.DEFAULT_VEL_LEVEL
+                            tr.vels[x] = self:get_track_default_vel_level(t)
                         end
                     else
                         if tr.gates[x] then
@@ -3800,7 +3823,7 @@ function App:handle_main_grid_event(x, y, z)
                         else
                             tr.gates[x] = true
                             tr.pitches[x] = degree
-                            tr.vels[x] = cfg.DEFAULT_VEL_LEVEL
+                            tr.vels[x] = self:get_track_default_vel_level(t)
                         end
                     end
                 end
@@ -3876,7 +3899,7 @@ function App:handle_main_grid_event(x, y, z)
                 ensure_push()
                 if not self.tracks[t].gates[x] then
                     self.tracks[t].gates[x] = true
-                    self.tracks[t].vels[x] = cfg.DEFAULT_VEL_LEVEL
+                    self.tracks[t].vels[x] = self:get_track_default_vel_level(t)
                     if self.track_cfg[t].type == "poly" and type(self.tracks[t].pitches[x]) ~= "table" then self.tracks[t].pitches[x] = { 1 } end
                 end
                 self:apply_pending_ratio_to_step(t, x)
@@ -3888,7 +3911,7 @@ function App:handle_main_grid_event(x, y, z)
                 else
                     local fp = self.tracks[t].pitches[x] or 1
                     if type(fp) == "table" then fp = fp[1] or 1 end
-                    self.fill_patterns[t][x] = { vel = cfg.DEFAULT_VEL_LEVEL, pitch = fp }
+                    self.fill_patterns[t][x] = { vel = self:get_track_default_vel_level(t), pitch = fp }
                 end
                 self.sel_track = t
             elseif self:mod_active(cfg.MOD.TEMP) then
@@ -3897,7 +3920,7 @@ function App:handle_main_grid_event(x, y, z)
                 if self.tracks[t].ties then self.tracks[t].ties[x] = false end
                 if not self.tracks[t].gates[x] then
                     self.tracks[t].gates[x] = true
-                    self.tracks[t].vels[x] = cfg.DEFAULT_VEL_LEVEL
+                    self.tracks[t].vels[x] = self:get_track_default_vel_level(t)
                     if self.track_cfg[t].type == "poly" and type(self.tracks[t].pitches[x]) ~= "table" then self.tracks[t].pitches[x] = { 1 } end
                     self:add_temp_step(t, x)
                 end
@@ -3913,7 +3936,7 @@ function App:handle_main_grid_event(x, y, z)
                 if self.tracks[t].ties then self.tracks[t].ties[x] = false end
                 if not self.tracks[t].gates[x] then
                     self.tracks[t].gates[x] = true
-                    self.tracks[t].vels[x] = cfg.DEFAULT_VEL_LEVEL
+                    self.tracks[t].vels[x] = self:get_track_default_vel_level(t)
                     if self.track_cfg[t].type == "poly" and type(self.tracks[t].pitches[x]) ~= "table" then self.tracks[t].pitches[x] = { 1 } end
                 end
             end
