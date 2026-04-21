@@ -1089,9 +1089,10 @@ function App:build_arc_step_cache(track, tr, tc)
             local wave = self:get_arc_wave_value(track, pos, len, arc_state.mode)
             local shift = math.floor((wave * variance_depth) + ((wave >= 0) and 0.5 or -0.5))
             local ref_step = self:get_arc_reference_step(track, order, step, tr)
+            local default_vel = self:get_track_default_vel_level(track)
 
             if tc.type == "drum" then
-                local base_vel = ref_step and tr.vels[ref_step] or cfg.DEFAULT_VEL_LEVEL
+                local base_vel = ref_step and tr.vels[ref_step] or default_vel
                 cache[step] = {
                     source = "arc",
                     vel = clamp(base_vel + shift, 1, 15)
@@ -1109,14 +1110,14 @@ function App:build_arc_step_cache(track, tr, tc)
                 if #chord == 0 then chord[1] = 1 end
                 cache[step] = {
                     source = "arc",
-                    vel = ref_step and tr.vels[ref_step] or cfg.DEFAULT_VEL_LEVEL,
+                    vel = ref_step and tr.vels[ref_step] or default_vel,
                     pitch = chord
                 }
             else
                 local base_degree = ref_step and tr.pitches[ref_step] or 1
                 cache[step] = {
                     source = "arc",
-                    vel = ref_step and tr.vels[ref_step] or cfg.DEFAULT_VEL_LEVEL,
+                    vel = ref_step and tr.vels[ref_step] or default_vel,
                     pitch = clamp((tonumber(base_degree) or 1) + shift, 1, 16)
                 }
             end
@@ -1128,6 +1129,10 @@ end
 
 function App:get_arc_step_data(track, step)
     return self:build_arc_step_cache(track)[step]
+end
+
+function App:step_has_playable_note(track, step)
+    return self:get_arc_step_data(track, step) ~= nil
 end
 
 function App:is_temp_button_fill_mode()
@@ -2505,7 +2510,7 @@ function App:play_tracks(pulse_scale)
             self.track_steps[t] = ts + 1
 
             local sp = self.spice[t] and self.spice[t][st]
-            if sp and sp.amount ~= 0 then
+            if sp and sp.amount ~= 0 and should_play and not tr.muted then
                 sp.current = (tonumber(sp.current) or 0) + (tonumber(sp.amount) or 0)
                 if sp.current > self.spice_accum_max then
                     sp.current = self.spice_accum_min
@@ -3820,7 +3825,7 @@ function App:handle_aux_grid_event(x, y, z)
         applied_value = self.beat_repeat_excluded[t] and "exclude" or "include"
     elseif self.mod_held[cfg.MOD.SPICE] and self.spice_pending_amount then
         ensure_push()
-        if tr.gates[x] then self.spice[t][x] = { amount = self.spice_pending_amount, current = 0 } end
+        if self:step_has_playable_note(t, x) then self.spice[t][x] = { amount = self.spice_pending_amount, current = 0 } end
         applied_value = tostring(self.spice_pending_amount)
     elseif self.mod_held[cfg.MOD.CLEAR] and self.mod_held[cfg.MOD.SHIFT] then
         ensure_push()
@@ -4015,7 +4020,7 @@ function App:handle_main_grid_event(x, y, z)
                     applied_value = self.beat_repeat_excluded[t] and "exclude" or "include"
                 elseif self.mod_held[cfg.MOD.SPICE] and self.spice_pending_amount then
                     ensure_push()
-                    if tr.gates[x] then self.spice[t][x] = { amount = self.spice_pending_amount, current = 0 } end
+                    if self:step_has_playable_note(t, x) then self.spice[t][x] = { amount = self.spice_pending_amount, current = 0 } end
                     applied_value = tostring(self.spice_pending_amount)
                 elseif self.mod_held[cfg.MOD.CLEAR] and self.mod_held[cfg.MOD.SHIFT] then
                     ensure_push()
@@ -4189,7 +4194,7 @@ function App:handle_main_grid_event(x, y, z)
                 self.beat_repeat_excluded[t] = not self.beat_repeat_excluded[t]
             elseif self.mod_held[cfg.MOD.SPICE] and self.spice_pending_amount then
                 ensure_push()
-                if self.tracks[t].gates[x] then self.spice[t][x] = { amount = self.spice_pending_amount, current = 0 } end
+                if self:step_has_playable_note(t, x) then self.spice[t][x] = { amount = self.spice_pending_amount, current = 0 } end
                 self.sel_track = t
             elseif self.mod_held[cfg.MOD.CLEAR] and self.mod_held[cfg.MOD.SHIFT] then
                 ensure_push()
