@@ -68,6 +68,8 @@ local ARC_DELTA_THRESHOLDS = {
     [4] = 16
 }
 
+local TRACK_SELECT_MOD = 5
+
 function App.new()
     local self = setmetatable({}, App)
 
@@ -140,6 +142,17 @@ function App.new()
     self.spice_accum_min = cfg.SPICE_MIN
     self.spice_accum_max = cfg.SPICE_MAX
     self.track_transpose = {}
+    self.transpose_mode = "semitone"
+    self.transpose_takeover_mode = false
+    self.transpose_seq_steps = {}
+    self.transpose_seq_selected_step = 1
+    self.transpose_seq_assign = {}
+    self.transpose_seq_clock_mult = 1
+    self.transpose_seq_clock_div = 4
+    self.transpose_seq_clock_phase = 0
+    self.transpose_seq_step = 1
+    self.transpose_seq_step_held = {}
+    self.transpose_seq_hold_start = nil
     self.track_default_vel = {}
     self.track_gate_ticks = {}
     self.undo_stack = {}
@@ -230,9 +243,14 @@ function App.new()
         self.ratios[t] = {}
         self.spice[t] = {}
         self.track_transpose[t] = 0
+        self.transpose_seq_assign[t] = (self.track_cfg[t].type ~= "drum")
         self.track_default_vel[t] = self:vel_to_midi(cfg.DEFAULT_VEL_LEVEL)
         self.track_gate_ticks[t] = (self.track_cfg[t].type == "drum") and self.drum_gate_clocks or
             self.melody_gate_clocks
+    end
+
+    for s = 1, cfg.NUM_STEPS do
+        self.transpose_seq_steps[s] = { active = false, degree = 1 }
     end
 
     return self
@@ -278,6 +296,7 @@ function App:default_setup_param_ids()
         "permute_crow_track_2",
         "permute_redraw_fps",
         "permute_screen_orientation",
+        "permute_transpose_mode",
         "permute_beat_repeat_mode",
         "permute_beat_repeat_direction",
         "permute_temp_button_mode",
@@ -472,6 +491,117 @@ function App:clear_step_select_repeat_state()
     self.dynamic_row_held = {}
 end
 
+function App:get_transpose_seq_degree_for_row(layout_top, layout_bottom, y)
+    local row = clamp(tonumber(y) or layout_bottom, layout_top, layout_bottom)
+    return clamp((layout_bottom - row) + 1, 1, math.max(1, layout_bottom - layout_top + 1))
+end
+
+function App:get_transpose_seq_row_for_degree(layout_top, layout_bottom, degree)
+    local d = clamp(tonumber(degree) or 1, 1, math.max(1, layout_bottom - layout_top + 1))
+    return layout_bottom - d + 1
+end
+
+function App:get_speed_ratio_for_column(x)
+    local center = 8
+    local col = clamp(tonumber(x) or center, 1, 16)
+    if col == center then return 1, 1 end
+    if col < center then return center - col + 1, 1 end
+    return 1, col - center + 1
+end
+
+function App:get_speed_column_for_ratio(mult, div)
+    local center = 8
+    local m = clamp(tonumber(mult) or 1, 1, 8)
+    local d = clamp(tonumber(div) or 1, 1, 16)
+    if d == 1 then
+        return clamp(center - (m - 1), 1, 16)
+    end
+    return clamp(center + (d - 1), 1, 16)
+end
+
+function App:get_transpose_seq_layout()
+    local mod_row = self:get_main_mod_row()
+    local dyn_row = self:get_main_dynamic_row()
+    if self:is_main_grid_128() then
+        return {
+            seq_top = 1,
+            seq_bottom = 1,
+            clock_row = 3,
+            assign_row = 5,
+            dyn_row = dyn_row,
+            mod_row = mod_row
+        }
+    end
+    return {
+        seq_top = 1,
+        seq_bottom = 8,
+        clock_row = 11,
+        assign_row = 13,
+        dyn_row = dyn_row,
+        mod_row = mod_row
+    }
+end
+
+function App:is_track_melodic(track)
+    local tc = self.track_cfg[track]
+    return tc and tc.type ~= "drum"
+end
+
+function App:get_transpose_seq_current_degree()
+    local idx = clamp(tonumber(self.transpose_seq_step) or 1, 1, cfg.NUM_STEPS)
+    local step = self.transpose_seq_steps[idx]
+    if type(step) ~= "table" or not step.active then return 0 end
+    return clamp((tonumber(step.degree) or 1) - 1, 0, 15)
+end
+
+function App:is_transpose_seq_active_for_track(track)
+    return self.takeover_mode
+        and self.transpose_takeover_mode
+        and self:is_track_melodic(track)
+        and not not self.transpose_seq_assign[track]
+end
+
+function App:update_transpose_seq_clock()
+    if not (self.takeover_mode and self.transpose_takeover_mode) then return end
+    local mult = clamp(tonumber(self.transpose_seq_clock_mult) or 1, 1, 8)
+    local div = clamp(tonumber(self.transpose_seq_clock_div) or 4, 1, 16)
+    self.transpose_seq_clock_phase = (tonumber(self.transpose_seq_clock_phase) or 0) + (mult / div)
+    local hits = math.floor(self.transpose_seq_clock_phase)
+    if hits > 0 then
+        self.transpose_seq_clock_phase = self.transpose_seq_clock_phase - hits
+        self.transpose_seq_step = ((clamp(tonumber(self.transpose_seq_step) or 1, 1, cfg.NUM_STEPS) - 1 + hits) % cfg.NUM_STEPS) +
+            1
+    end
+end
+
+function App:reset_transpose_meta_sequence()
+    for s = 1, cfg.NUM_STEPS do
+        self.transpose_seq_steps[s] = { active = false, degree = 1 }
+    end
+    for t = 1, cfg.NUM_TRACKS do
+        self.transpose_seq_assign[t] = self:is_track_melodic(t)
+    end
+    self.transpose_seq_selected_step = 1
+    self.transpose_seq_clock_mult = 1
+    self.transpose_seq_clock_div = 4
+    self.transpose_seq_clock_phase = 0
+    self.transpose_seq_step = 1
+    self.transpose_seq_step_held = {}
+    self.transpose_seq_hold_start = nil
+end
+
+function App:apply_transpose_seq_hold_span(start_step, end_step)
+    local a = clamp(tonumber(start_step) or 1, 1, cfg.NUM_STEPS)
+    local b = clamp(tonumber(end_step) or a, 1, cfg.NUM_STEPS)
+    local lo = math.min(a, b)
+    local hi = math.max(a, b)
+    local anchor = self.transpose_seq_steps[a] or { active = false, degree = 1 }
+    local degree = clamp(tonumber(anchor.degree) or 1, 1, 16)
+    for s = lo, hi do
+        self.transpose_seq_steps[s] = { active = true, degree = degree }
+    end
+end
+
 function App:set_track_counter_to_step(track, step)
     local tr = self:ensure_track_state(track)
     local lo, hi, reverse = self:get_track_bounds(tr)
@@ -652,6 +782,14 @@ function App:export_state()
         track_clock_div = deep_copy_table(self.track_clock_div),
         track_clock_mult = deep_copy_table(self.track_clock_mult),
         track_transpose = deep_copy_table(self.track_transpose),
+        transpose_mode = self.transpose_mode,
+        transpose_takeover_mode = self.transpose_takeover_mode,
+        transpose_seq_steps = deep_copy_table(self.transpose_seq_steps),
+        transpose_seq_selected_step = self.transpose_seq_selected_step,
+        transpose_seq_assign = deep_copy_table(self.transpose_seq_assign),
+        transpose_seq_clock_mult = self.transpose_seq_clock_mult,
+        transpose_seq_clock_div = self.transpose_seq_clock_div,
+        transpose_seq_step = self.transpose_seq_step,
         track_gate_ticks = deep_copy_table(self.track_gate_ticks),
         fill_patterns = deep_copy_table(self.fill_patterns),
         ratios = deep_copy_table(self.ratios),
@@ -690,6 +828,8 @@ function App:import_state(state)
     if type(state.track_clock_div) == "table" then self.track_clock_div = deep_copy_table(state.track_clock_div) end
     if type(state.track_clock_mult) == "table" then self.track_clock_mult = deep_copy_table(state.track_clock_mult) end
     if type(state.track_transpose) == "table" then self.track_transpose = deep_copy_table(state.track_transpose) end
+    if type(state.transpose_seq_steps) == "table" then self.transpose_seq_steps = deep_copy_table(state.transpose_seq_steps) end
+    if type(state.transpose_seq_assign) == "table" then self.transpose_seq_assign = deep_copy_table(state.transpose_seq_assign) end
     if type(state.track_gate_ticks) == "table" then self.track_gate_ticks = deep_copy_table(state.track_gate_ticks) end
     if type(state.fill_patterns) == "table" then self.fill_patterns = deep_copy_table(state.fill_patterns) end
     if type(state.ratios) == "table" then self.ratios = deep_copy_table(state.ratios) end
@@ -716,6 +856,14 @@ function App:import_state(state)
     self.screen_orientation = (state.screen_orientation == "cw90") and "cw90" or "normal"
     self.key_root = clamp(tonumber(state.key_root) or self.key_root or 0, 0, 11)
     self.key_transpose = clamp(tonumber(state.key_transpose) or self.key_transpose or 0, -7, 8)
+    self.transpose_mode = (state.transpose_mode == "scale degree") and "scale degree" or "semitone"
+    self.transpose_takeover_mode = not not state.transpose_takeover_mode
+    self.transpose_seq_selected_step = clamp(tonumber(state.transpose_seq_selected_step) or self.transpose_seq_selected_step or 1, 1,
+        cfg.NUM_STEPS)
+    self.transpose_seq_clock_mult = clamp(tonumber(state.transpose_seq_clock_mult) or self.transpose_seq_clock_mult or 1, 1, 8)
+    self.transpose_seq_clock_div = clamp(tonumber(state.transpose_seq_clock_div) or self.transpose_seq_clock_div or 4, 1, 16)
+    self.transpose_seq_step = clamp(tonumber(state.transpose_seq_step) or self.transpose_seq_step or 1, 1, cfg.NUM_STEPS)
+    self.transpose_seq_clock_phase = 0
     self.scale_degree = clamp(tonumber(state.scale_degree) or self.scale_degree or 1, 1, 7)
     self.sel_track = tonumber(state.sel_track)
     self.step = tonumber(state.step) or 1
@@ -742,12 +890,24 @@ function App:import_state(state)
             self.track_gate_ticks[t] = (self.track_cfg[t].type == "drum") and self.drum_gate_clocks or
                 self.melody_gate_clocks
         end
+        if self.transpose_seq_assign[t] == nil then
+            self.transpose_seq_assign[t] = (self.track_cfg[t].type ~= "drum")
+        end
         self.track_gate_ticks[t] = clamp(tonumber(self.track_gate_ticks[t]) or 1, 1, 24)
         if not self.fill_patterns[t] then self.fill_patterns[t] = {} end
         if not self.ratios[t] then self.ratios[t] = {} end
         if not self.spice[t] then self.spice[t] = {} end
         if not self.track_loop_count[t] then self.track_loop_count[t] = 1 end
         self:ensure_track_state(t)
+    end
+
+    for s = 1, cfg.NUM_STEPS do
+        local step = self.transpose_seq_steps[s]
+        if type(step) ~= "table" then step = {} end
+        self.transpose_seq_steps[s] = {
+            active = not not step.active,
+            degree = clamp(tonumber(step.degree) or 1, 1, 16)
+        }
     end
 
     self:request_redraw()
@@ -889,6 +1049,8 @@ function App:reset_playheads()
     self.beat_repeat_select_armed = false
     self.beat_repeat_select_active = false
     self.beat_repeat_select_cycle = 0
+    self.transpose_seq_clock_phase = 0
+    self.transpose_seq_step = 1
     for t = 1, cfg.NUM_TRACKS do
         self.track_steps[t] = 1
         self.track_clock_phase[t] = 0
@@ -1493,16 +1655,23 @@ end
 
 function App:handle_mod_row(x, z)
     if x == cfg.MOD.TAKEOVER and z == 1 then
-        if self.mod_held[cfg.MOD.SHIFT] then
+        if self.mod_held[TRACK_SELECT_MOD] then
+            if not self.sel_track then self.sel_track = 1 end
+            self.takeover_mode = true
+            self.transpose_takeover_mode = not self.transpose_takeover_mode
+            self:flash_mod_applied(cfg.MOD.TAKEOVER, self.transpose_takeover_mode and "tr seq" or "takeover")
+        elseif self.mod_held[cfg.MOD.SHIFT] then
             self.realtime_play_mode = not self.realtime_play_mode
             self:clear_realtime_row_holds()
             if self.realtime_play_mode then
                 self.takeover_mode = false
+                self.transpose_takeover_mode = false
             end
             self:flash_mod_applied(cfg.MOD.TAKEOVER, self.realtime_play_mode and "play on" or "play off")
         else
             if not self.sel_track then self.sel_track = 1 end
             self.takeover_mode = not self.takeover_mode
+            if not self.takeover_mode then self.transpose_takeover_mode = false end
             self:flash_mod_applied(cfg.MOD.TAKEOVER, self.takeover_mode and "on" or "off")
         end
         self:request_redraw()
@@ -1611,6 +1780,9 @@ function App:handle_mod_row(x, z)
         self.mod_held[x] = nil
         if x == cfg.MOD.TEMP and not self:is_temp_button_fill_mode() then self:clear_temp_steps() end
         if x == cfg.MOD.START or x == cfg.MOD.END_STEP then self.speed_mode = false end
+        if x == cfg.MOD.TAKEOVER and not self.takeover_mode then
+            self.transpose_takeover_mode = false
+        end
         if x == cfg.MOD.TEMP and self:is_temp_button_fill_mode() then
             self.fill_active = false
             self.fill_applied = self.fill_latched
@@ -2070,10 +2242,20 @@ end
 function App:get_pitch(track, degree, extra_degrees)
     local scale, mode_root = self:get_mode_scale_and_root()
     local base = cfg.DEFAULT_MELODIC_BASE_NOTE
-    base = base + clamp(tonumber(self.key_root) or 0, 0, 11) + mode_root +
-        clamp(tonumber(self.track_transpose[track]) or 0, -7, 8)
+    base = base + clamp(tonumber(self.key_root) or 0, 0, 11) + mode_root
 
-    local total_degree = degree + (extra_degrees or 0)
+    local track_transpose = clamp(tonumber(self.track_transpose[track]) or 0, -7, 8)
+    local degree_transpose = 0
+    if self.transpose_mode == "scale degree" then
+        degree_transpose = track_transpose
+    else
+        base = base + track_transpose
+    end
+    if self:is_transpose_seq_active_for_track(track) then
+        degree_transpose = degree_transpose + self:get_transpose_seq_current_degree()
+    end
+
+    local total_degree = degree + (extra_degrees or 0) + degree_transpose
 
     local oct = math.floor((total_degree - 1) / #scale)
     local idx = ((total_degree - 1) % #scale) + 1
@@ -2202,8 +2384,12 @@ function App:set_track_type(t, new_type)
 
     if old_type ~= "drum" and new_type == "drum" then
         self.track_gate_ticks[track] = clamp(tonumber(self.drum_gate_clocks) or 1, 1, 24)
+        self.transpose_seq_assign[track] = false
     elseif old_type == "drum" and new_type ~= "drum" then
         self.track_gate_ticks[track] = clamp(tonumber(self.melody_gate_clocks) or 1, 1, 24)
+        if self.transpose_seq_assign[track] == nil then
+            self.transpose_seq_assign[track] = true
+        end
     end
 
     self:ensure_track_state(track)
@@ -2589,6 +2775,8 @@ function App:reset_tracks_to_start_positions()
     self.beat_repeat_select_armed = false
     self.beat_repeat_select_active = false
     self.beat_repeat_select_cycle = 0
+    self.transpose_seq_clock_phase = 0
+    self.transpose_seq_step = 1
 end
 
 function App:advance_clock_tick()
@@ -2603,6 +2791,7 @@ function App:advance_clock_tick()
     if self.clock_ticks >= cfg.MIDI_CLOCK_TICKS_PER_STEP then
         self.clock_ticks = self.clock_ticks - cfg.MIDI_CLOCK_TICKS_PER_STEP
         self:update_repeat_window()
+        self:update_transpose_seq_clock()
         step_boundary = true
     end
 
@@ -2833,6 +3022,7 @@ end
 
 function App:clear_all_tracks()
     for t = 1, cfg.NUM_TRACKS do self:clear_track(t) end
+    self:reset_transpose_meta_sequence()
 end
 
 function App:clear_modifier_for_track(mod, t)
@@ -3043,6 +3233,181 @@ function App:draw_mod_row()
     end
 end
 
+function App:draw_transpose_seq_dynamic_row(layout)
+    local step_idx = clamp(tonumber(self.transpose_seq_selected_step) or 1, 1, cfg.NUM_STEPS)
+    local step = self.transpose_seq_steps[step_idx] or { active = false, degree = 1 }
+    local dyn_row = layout.dyn_row
+    local max_degree = (layout.seq_bottom > layout.seq_top) and 8 or 16
+    local selected_degree = clamp(tonumber(step.degree) or 1, 1, max_degree)
+    for x = 1, 16 do
+        local lv = 1
+        if x <= max_degree then
+            lv = (x == selected_degree) and 15 or 2
+        end
+        self:grid_led(x, dyn_row, lv)
+    end
+end
+
+function App:draw_transpose_takeover()
+    local layout = self:get_transpose_seq_layout()
+    local seq_step = clamp(tonumber(self.transpose_seq_step) or 1, 1, cfg.NUM_STEPS)
+    local selected_step = clamp(tonumber(self.transpose_seq_selected_step) or 1, 1, cfg.NUM_STEPS)
+    local scale = cfg.SCALES[self.scale_type] or cfg.SCALES.chromatic
+    local scale_len = math.max(1, #scale)
+
+    if layout.seq_top == layout.seq_bottom then
+        for s = 1, cfg.NUM_STEPS do
+            if ((s - 1) % 4) == 0 then
+                self:grid_led(s, layout.seq_top, 1)
+            end
+        end
+    else
+        for s = 1, cfg.NUM_STEPS do
+            for row = layout.seq_top, layout.seq_bottom do
+                local degree = self:get_transpose_seq_degree_for_row(layout.seq_top, layout.seq_bottom, row)
+                local lv = 0
+                if ((s - 1) % 4) == 0 then lv = math.max(lv, 1) end
+                if ((degree - 1) % scale_len) == 0 then lv = math.max(lv, 2) end
+                if lv > 0 then self:grid_led(s, row, lv) end
+            end
+        end
+    end
+
+    if layout.seq_top == layout.seq_bottom then
+        for s = 1, cfg.NUM_STEPS do
+            local data = self.transpose_seq_steps[s] or { active = false, degree = 1 }
+            local lv = data.active and 8 or 2
+            if s == selected_step then lv = math.max(lv, 12) end
+            if s == seq_step and self.playing then lv = data.active and 15 or 6 end
+            self:grid_led(s, layout.seq_top, lv)
+        end
+    else
+        for s = 1, cfg.NUM_STEPS do
+            local data = self.transpose_seq_steps[s] or { active = false, degree = 1 }
+            if data.active then
+                local row = self:get_transpose_seq_row_for_degree(layout.seq_top, layout.seq_bottom, data.degree)
+                local lv = (s == selected_step) and 12 or 8
+                if s == seq_step and self.playing then lv = 15 end
+                self:grid_led(s, row, lv)
+            elseif s == selected_step then
+                self:grid_led(s, layout.seq_bottom, 4)
+            end
+
+            if s == seq_step and self.playing and not data.active then
+                self:grid_led(s, layout.seq_bottom, 6)
+            end
+        end
+    end
+
+    local div_col = self:get_speed_column_for_ratio(self.transpose_seq_clock_mult, self.transpose_seq_clock_div)
+    for x = 1, 16 do
+        self:grid_led(x, layout.clock_row, x == div_col and 12 or 2)
+    end
+
+    for x = 1, 16 do
+        if x <= cfg.NUM_TRACKS then
+            local melodic = self:is_track_melodic(x)
+            if not melodic then
+                self:grid_led(x, layout.assign_row, 1)
+            else
+                local lv = self.transpose_seq_assign[x] and 10 or 2
+                if self.sel_track == x then
+                    lv = self.transpose_seq_assign[x] and 15 or 4
+                end
+                self:grid_led(x, layout.assign_row, lv)
+            end
+        end
+    end
+
+    self:draw_transpose_seq_dynamic_row(layout)
+    self:draw_mod_row()
+end
+
+function App:handle_transpose_takeover_event(x, y, z)
+    local layout = self:get_transpose_seq_layout()
+    if y == layout.mod_row then
+        self:handle_mod_row(x, z)
+        return
+    end
+    if y >= layout.seq_top and y <= layout.seq_bottom then
+        if z == 0 then
+            self.transpose_seq_step_held[x] = nil
+            if self.transpose_seq_hold_start == x then self.transpose_seq_hold_start = nil end
+            return
+        end
+    end
+    if z ~= 1 then return end
+
+    if y == layout.dyn_row then
+        local step_idx = clamp(tonumber(self.transpose_seq_selected_step) or 1, 1, cfg.NUM_STEPS)
+        local step = self.transpose_seq_steps[step_idx] or { active = false, degree = 1 }
+        local max_degree = (layout.seq_bottom > layout.seq_top) and 8 or 16
+        if x <= max_degree then
+            step.active = true
+            step.degree = clamp(x, 1, max_degree)
+            self.transpose_seq_steps[step_idx] = step
+        end
+        self:request_redraw()
+        return
+    end
+
+    if y >= layout.seq_top and y <= layout.seq_bottom then
+        if self.mod_held[cfg.MOD.CLEAR] then
+            if self.mod_held[cfg.MOD.SHIFT] then
+                self:reset_transpose_meta_sequence()
+            else
+                local step = self.transpose_seq_steps[x] or { active = false, degree = 1 }
+                step.active = false
+                self.transpose_seq_steps[x] = step
+                self.transpose_seq_selected_step = x
+            end
+            self:request_redraw()
+            return
+        end
+
+        self.transpose_seq_step_held[x] = true
+        local step = self.transpose_seq_steps[x] or { active = false, degree = 1 }
+        if self.transpose_seq_hold_start
+            and self.transpose_seq_hold_start ~= x
+            and self.transpose_seq_step_held[self.transpose_seq_hold_start] then
+            self:apply_transpose_seq_hold_span(self.transpose_seq_hold_start, x)
+            self.transpose_seq_selected_step = x
+            self:request_redraw()
+            return
+        end
+        self.transpose_seq_hold_start = x
+
+        self.transpose_seq_selected_step = x
+        if layout.seq_top == layout.seq_bottom then
+            step.active = true
+        else
+            step.active = true
+            step.degree = self:get_transpose_seq_degree_for_row(layout.seq_top, layout.seq_bottom, y)
+        end
+        self.transpose_seq_steps[x] = step
+        self:request_redraw()
+        return
+    end
+
+    if y == layout.clock_row then
+        local mult, div = self:get_speed_ratio_for_column(x)
+        self.transpose_seq_clock_mult = mult
+        self.transpose_seq_clock_div = div
+        self.transpose_seq_clock_phase = 0
+        self:request_redraw()
+        return
+    end
+
+    if y == layout.assign_row and x <= cfg.NUM_TRACKS then
+        self.sel_track = x
+        if self:is_track_melodic(x) then
+            self.transpose_seq_assign[x] = not self.transpose_seq_assign[x]
+        end
+        self:request_redraw()
+        return
+    end
+end
+
 function App:draw_takeover()
     local tr = self:ensure_track_state(self.sel_track)
     local tc = self.track_cfg[self.sel_track]
@@ -3142,11 +3507,15 @@ function App:redraw_main_grid()
 
     dev:all(0)
     if self.takeover_mode and self.sel_track then
-        self:draw_takeover()
-        if self:is_modifier_dynamic_row_active() and not self:is_main_grid_128() then
-            self:draw_dynamic_row()
+        if self.transpose_takeover_mode then
+            self:draw_transpose_takeover()
+        else
+            self:draw_takeover()
+            if self:is_modifier_dynamic_row_active() and not self:is_main_grid_128() then
+                self:draw_dynamic_row()
+            end
+            self:draw_mod_row()
         end
-        self:draw_mod_row()
     else
         local page_start = self:get_main_track_page_start()
         local page_end = math.min(cfg.NUM_TRACKS, page_start + self:get_main_overview_track_rows() - 1)
@@ -3969,6 +4338,11 @@ function App:handle_main_grid_event(x, y, z)
     end
 
     if self.takeover_mode then
+        if self.transpose_takeover_mode then
+            self:handle_transpose_takeover_event(x, y, z)
+            return
+        end
+
         if y == mod_row then
             self:handle_mod_row(x, z)
             return

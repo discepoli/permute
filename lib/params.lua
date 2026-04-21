@@ -6,6 +6,7 @@ local M = {}
 local SCALE_NAMES = { "chromatic", "diatonic", "pentatonic", "lightbath" }
 local TRACK_TYPES = { "drum", "mono", "poly" }
 local BEAT_REPEAT_MODES = { "full-row", "one-handed", "step-select" }
+local TRANSPOSE_MODES = { "semitone", "scale degree" }
 local SCALE_DEGREE_LABELS = {
     diatonic = { "I", "ii", "iii", "IV", "V", "vi", "vii" },
     pentatonic = { "I", "ii", "iii", "V", "vi" },
@@ -44,7 +45,7 @@ function M.setup(app)
     local prev_action_read = params.action_read
     local prev_action_delete = params.action_delete
 
-    params:add_group("permute_seq", "permute", 35)
+    params:add_group("permute_seq", "permute", 36)
 
     params:add_option("permute_scale", "scale", SCALE_NAMES, 2)
     params:set_action("permute_scale", function(v)
@@ -214,6 +215,12 @@ function M.setup(app)
     params:add_option("permute_beat_repeat_direction", "b. repeat direction", { "l->r", "l<-r" }, 1)
     params:set_action("permute_beat_repeat_direction", function(v)
         app.beat_repeat_direction = (v == 2) and "l<-r" or "l->r"
+        app:request_redraw()
+    end)
+
+    params:add_option("permute_transpose_mode", "transpose mode", TRANSPOSE_MODES, 1)
+    params:set_action("permute_transpose_mode", function(v)
+        app.transpose_mode = TRANSPOSE_MODES[v] or TRANSPOSE_MODES[1]
         app:request_redraw()
     end)
 
