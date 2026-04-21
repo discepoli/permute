@@ -123,6 +123,11 @@ function App.new()
     self.beat_repeat_mode = "full-row"
     self.beat_repeat_direction = "l->r"
     self.beat_repeat_excluded = {}
+    self.beat_repeat_select_start = nil
+    self.beat_repeat_select_end = nil
+    self.beat_repeat_select_armed = false
+    self.beat_repeat_select_active = false
+    self.beat_repeat_select_cycle = 0
     self.speed_mode = false
     self.save_slots = {}
     self.fill_patterns = {}
@@ -417,6 +422,67 @@ function App:get_beat_repeat_column_for_length(len)
     return nil
 end
 
+function App:reset_step_select_repeat()
+    self.beat_repeat_select_start = nil
+    self.beat_repeat_select_end = nil
+    self.beat_repeat_select_armed = false
+    self.beat_repeat_select_active = false
+    self.beat_repeat_select_cycle = 0
+end
+
+function App:get_step_select_repeat_spec()
+    local start_step = tonumber(self.beat_repeat_select_start)
+    local end_step = tonumber(self.beat_repeat_select_end)
+    if not start_step or not end_step then return nil end
+    local direction = (end_step >= start_step) and 1 or -1
+    local len = math.abs(end_step - start_step) + 1
+    return start_step, end_step, direction, len
+end
+
+function App:get_step_select_repeat_target_step()
+    local start_step, _, direction, len = self:get_step_select_repeat_spec()
+    if not start_step then return nil end
+    local idx = (tonumber(self.beat_repeat_select_cycle) or 0) % len
+    return start_step + (idx * direction)
+end
+
+function App:get_step_select_repeat_cycle_for_step(step)
+    local start_step, _, direction, len = self:get_step_select_repeat_spec()
+    if not start_step then return 0 end
+    local s = clamp(tonumber(step) or start_step, 1, cfg.NUM_STEPS)
+    local idx = (direction == 1) and (s - start_step) or (start_step - s)
+    if idx < 0 or idx >= len then return 0 end
+    return idx
+end
+
+function App:is_step_select_repeat_hold_active()
+    if self.mod_held[cfg.MOD.BEAT_RPT] then return true end
+    local held = self.dynamic_row_held or {}
+    local start_step = tonumber(self.beat_repeat_select_start)
+    local end_step = tonumber(self.beat_repeat_select_end)
+    if start_step and held[start_step] then return true end
+    if end_step and held[end_step] then return true end
+    return false
+end
+
+function App:clear_step_select_repeat_state()
+    self.beat_repeat_len = 0
+    self.beat_repeat_excluded = {}
+    self:reset_step_select_repeat()
+    self.dynamic_row_held = {}
+end
+
+function App:set_track_counter_to_step(track, step)
+    local tr = self:ensure_track_state(track)
+    local lo, hi, reverse = self:get_track_bounds(tr)
+    local target = clamp(tonumber(step) or lo, lo, hi)
+    local len = hi - lo + 1
+    local pos = reverse and (hi - target) or (target - lo)
+    local current = tonumber(self.track_steps[track]) or 1
+    local base = math.floor((current - 1) / len) * len
+    self.track_steps[track] = base + pos + 1
+end
+
 function App:for_each_midi_device(ports, fn)
     local selected_ports = self:capture_midi_ports(ports)
     for _, port in ipairs(selected_ports) do
@@ -637,6 +703,10 @@ function App:import_state(state)
     self.beat_repeat_len = tonumber(state.beat_repeat_len) or 0
     self.beat_repeat_mode = state.beat_repeat_mode or self.beat_repeat_mode
     self.beat_repeat_direction = (state.beat_repeat_direction == "l<-r") and "l<-r" or "l->r"
+    if self.beat_repeat_mode == "step-select" then
+        self.beat_repeat_len = 0
+        self:reset_step_select_repeat()
+    end
     self.master_seq_len_enabled = not not state.master_seq_len_enabled
     self.master_seq_len = clamp(tonumber(state.master_seq_len) or cfg.DEFAULT_MASTER_SEQ_LEN, 1, cfg.MAX_MASTER_SEQ_LEN)
     if state.send_midi_clock_out ~= nil then self.send_midi_clock_out = not not state.send_midi_clock_out end
@@ -816,6 +886,9 @@ function App:reset_playheads()
     self.beat_repeat_start = 0
     self.beat_repeat_cycle = 0
     self.beat_repeat_anchor = {}
+    self.beat_repeat_select_armed = false
+    self.beat_repeat_select_active = false
+    self.beat_repeat_select_cycle = 0
     for t = 1, cfg.NUM_TRACKS do
         self.track_steps[t] = 1
         self.track_clock_phase[t] = 0
@@ -1204,8 +1277,20 @@ function App:get_active_mod_value(mod_id)
     if mod_id == cfg.MOD.OCTAVE and self.sel_track then
         return tostring(self.tracks[self.sel_track].octave)
     elseif mod_id == cfg.MOD.TRANSPOSE then
-        return tostring(self.key_transpose or 0)
+        if self.sel_track then
+            return tostring(clamp(tonumber(self.track_transpose[self.sel_track]) or 0, -7, 8))
+        end
+        return "0"
     elseif mod_id == cfg.MOD.BEAT_RPT then
+        if self.beat_repeat_mode == "step-select" then
+            local start_step = tonumber(self.beat_repeat_select_start)
+            local end_step = tonumber(self.beat_repeat_select_end)
+            if start_step and end_step then
+                return tostring(start_step) .. "-" .. tostring(end_step)
+            elseif start_step then
+                return tostring(start_step) .. "-?"
+            end
+        end
         return tostring(self.beat_repeat_len or 0)
     elseif mod_id == cfg.MOD.SPICE then
         return tostring(self.spice_pending_amount or 0)
@@ -1528,15 +1613,38 @@ function App:handle_mod_row(x, z)
         if x == cfg.MOD.RAND_NOTES then self.rand_notes_rolled = false end
         if x == cfg.MOD.RAND_STEPS then self.rand_steps_shuffled = false end
         if x == cfg.MOD.BEAT_RPT then
-            self.beat_repeat_len = 0
-            self.beat_repeat_excluded = {}
+            if self.beat_repeat_mode == "step-select" then
+                if not self:is_step_select_repeat_hold_active() then
+                    self:clear_step_select_repeat_state()
+                end
+            else
+                self.beat_repeat_len = 0
+                self.beat_repeat_excluded = {}
+                self:reset_step_select_repeat()
+                self.dynamic_row_held = {}
+            end
         end
     end
     self:request_redraw()
 end
 
 function App:handle_dynamic_row(x, z)
+    self.dynamic_row_held = self.dynamic_row_held or {}
+    if z == 0 then
+        local start_step = tonumber(self.beat_repeat_select_start)
+        local end_step = tonumber(self.beat_repeat_select_end)
+        self.dynamic_row_held[x] = nil
+        if self.beat_repeat_mode == "step-select" and (x == start_step or x == end_step) then
+            if not self:is_step_select_repeat_hold_active() then
+                self:clear_step_select_repeat_state()
+            end
+        end
+        self:request_redraw()
+        return
+    end
+
     if z == 1 then
+        self.dynamic_row_held[x] = true
         local should_push_undo = false
         if self.mod_held[cfg.MOD.SHIFT] and self.mod_held[cfg.MOD.RATIOS] then
             should_push_undo = x > 8
@@ -1568,9 +1676,9 @@ function App:handle_dynamic_row(x, z)
         elseif self.mod_held[cfg.MOD.OCTAVE] and self.sel_track then
             self.tracks[self.sel_track].octave = x - 8
             applied_value = tostring(self.tracks[self.sel_track].octave)
-        elseif self.mod_held[cfg.MOD.TRANSPOSE] then
-            self.key_transpose = x - 8
-            applied_value = tostring(self.key_transpose)
+        elseif self.mod_held[cfg.MOD.TRANSPOSE] and self.sel_track then
+            self.track_transpose[self.sel_track] = x - 8
+            applied_value = tostring(self.track_transpose[self.sel_track])
         elseif self.mod_held[cfg.MOD.RAND_NOTES] and not self.mod_held[cfg.MOD.RAND_STEPS] and self.sel_track then
             self:apply_random_notes(self.sel_track, x)
             self.rand_notes_rolled = true
@@ -1586,10 +1694,51 @@ function App:handle_dynamic_row(x, z)
             self.rand_steps_shuffled = true
             applied_value = tostring(x)
         elseif self.mod_held[cfg.MOD.BEAT_RPT] then
-            local next_len = self:get_beat_repeat_length_for_column(x)
-            if next_len then
-                self.beat_repeat_len = (self.beat_repeat_len == next_len) and 0 or next_len
-                applied_value = tostring(self.beat_repeat_len)
+            if self.beat_repeat_mode == "step-select" then
+                local start_step = tonumber(self.beat_repeat_select_start)
+                local end_step = tonumber(self.beat_repeat_select_end)
+                local start_held = start_step and self.dynamic_row_held[start_step] or false
+                if start_step and start_held and x ~= start_step then
+                    local next_end = x
+                    local is_adjacent = math.abs(x - start_step) == 1
+                    if is_adjacent and end_step == x then
+                        next_end = start_step
+                    end
+                    self.beat_repeat_select_end = next_end
+                    local _, _, _, len = self:get_step_select_repeat_spec()
+                    self.beat_repeat_len = len or 0
+                    if self.beat_repeat_select_active then
+                        self.beat_repeat_select_cycle = self:get_step_select_repeat_cycle_for_step(self:get_track_step(1))
+                        self.beat_repeat_select_armed = false
+                    else
+                        self.beat_repeat_select_armed = true
+                        self.beat_repeat_select_active = false
+                        self.beat_repeat_select_cycle = 0
+                    end
+                    applied_value = tostring(self.beat_repeat_select_start) .. "-" .. tostring(next_end)
+                elseif (self.beat_repeat_select_start == nil) or (self.beat_repeat_select_start and self.beat_repeat_select_end) then
+                    self.beat_repeat_select_start = x
+                    self.beat_repeat_select_end = nil
+                    self.beat_repeat_select_armed = false
+                    self.beat_repeat_select_active = false
+                    self.beat_repeat_select_cycle = 0
+                    self.beat_repeat_len = 0
+                    applied_value = tostring(x) .. "-?"
+                else
+                    self.beat_repeat_select_end = x
+                    local _, _, _, len = self:get_step_select_repeat_spec()
+                    self.beat_repeat_select_armed = true
+                    self.beat_repeat_select_active = false
+                    self.beat_repeat_select_cycle = 0
+                    self.beat_repeat_len = len or 0
+                    applied_value = tostring(self.beat_repeat_select_start) .. "-" .. tostring(x)
+                end
+            else
+                local next_len = self:get_beat_repeat_length_for_column(x)
+                if next_len then
+                    self.beat_repeat_len = (self.beat_repeat_len == next_len) and 0 or next_len
+                    applied_value = tostring(self.beat_repeat_len)
+                end
             end
         elseif self.speed_mode then
             if self.sel_track then
@@ -1916,7 +2065,8 @@ end
 function App:get_pitch(track, degree, extra_degrees)
     local scale, mode_root = self:get_mode_scale_and_root()
     local base = cfg.DEFAULT_MELODIC_BASE_NOTE
-    base = base + clamp(tonumber(self.key_root) or 0, 0, 11) + mode_root + (self.key_transpose or 0)
+    base = base + clamp(tonumber(self.key_root) or 0, 0, 11) + mode_root +
+        clamp(tonumber(self.track_transpose[track]) or 0, -7, 8)
 
     local total_degree = degree + (extra_degrees or 0)
 
@@ -2368,6 +2518,37 @@ function App:play_tracks(pulse_scale)
 end
 
 function App:update_repeat_window()
+    if self.beat_repeat_mode == "step-select" then
+        local start_step, _, _, len = self:get_step_select_repeat_spec()
+        if not start_step then
+            self.beat_repeat_select_armed = false
+            self.beat_repeat_select_active = false
+            self.beat_repeat_select_cycle = 0
+            return 0
+        end
+
+        local current_step = self:get_track_step(1)
+        if not self.beat_repeat_select_active then
+            if self.beat_repeat_select_armed and current_step == start_step then
+                self.beat_repeat_select_active = true
+                self.beat_repeat_select_armed = false
+                self.beat_repeat_select_cycle = 0
+            else
+                return len
+            end
+        end
+
+        local target_step = self:get_step_select_repeat_target_step()
+        if target_step then
+            for t = 1, cfg.NUM_TRACKS do
+                if not self.beat_repeat_excluded[t] then
+                    self:set_track_counter_to_step(t, target_step)
+                end
+            end
+        end
+        return len
+    end
+
     local rpt_len = tonumber(self.beat_repeat_len) or 0
     if rpt_len > 0 then
         if self.beat_repeat_start == 0 then
@@ -2400,6 +2581,9 @@ function App:reset_tracks_to_start_positions()
     self.beat_repeat_start = 0
     self.beat_repeat_cycle = 0
     self.beat_repeat_anchor = {}
+    self.beat_repeat_select_armed = false
+    self.beat_repeat_select_active = false
+    self.beat_repeat_select_cycle = 0
 end
 
 function App:advance_clock_tick()
@@ -2431,7 +2615,13 @@ function App:advance_clock_tick()
             end
         end
 
-        if self.beat_repeat_len > 0 then self.beat_repeat_cycle = self.beat_repeat_cycle + 1 end
+        if self.beat_repeat_mode == "step-select" then
+            if self.beat_repeat_select_active then
+                self.beat_repeat_select_cycle = (tonumber(self.beat_repeat_select_cycle) or 0) + 1
+            end
+        elseif self.beat_repeat_len > 0 then
+            self.beat_repeat_cycle = self.beat_repeat_cycle + 1
+        end
         self.step = self:get_track_step(1)
         self:request_redraw()
     end
@@ -2653,7 +2843,7 @@ function App:clear_modifier_for_track(mod, t)
     elseif mod == cfg.MOD.OCTAVE then
         self.tracks[t].octave = 0
     elseif mod == cfg.MOD.TRANSPOSE then
-        self.key_transpose = 0
+        self.track_transpose[t] = 0
     elseif mod == cfg.MOD.SPICE then
         self.spice[t] = {}
     elseif mod == cfg.MOD.TEMP and self:is_temp_button_fill_mode() then
@@ -2711,7 +2901,7 @@ function App:draw_dynamic_row()
     end
 
     if self.mod_held[cfg.MOD.TRANSPOSE] then
-        local trans = clamp(tonumber(self.key_transpose) or 0, -7, 8)
+        local trans = clamp(tonumber(self.track_transpose[self.sel_track or 1]) or 0, -7, 8)
         for x = 1, 16 do
             local o = x - 8
             if o == trans then
@@ -2732,7 +2922,25 @@ function App:draw_dynamic_row()
 
     if self.mod_held[cfg.MOD.BEAT_RPT] then
         local rpt_len = tonumber(self.beat_repeat_len) or 0
-        if self.beat_repeat_mode == "one-handed" then
+        if self.beat_repeat_mode == "step-select" then
+            local start_step = tonumber(self.beat_repeat_select_start)
+            local end_step = tonumber(self.beat_repeat_select_end)
+            local lo = nil
+            local hi = nil
+            if start_step and end_step then
+                lo = math.min(start_step, end_step)
+                hi = math.max(start_step, end_step)
+            end
+            local active_step = self.beat_repeat_select_active and self:get_step_select_repeat_target_step() or nil
+            for x = 1, 16 do
+                local lv = 2
+                if lo and hi and x >= lo and x <= hi then lv = 6 end
+                if x == end_step then lv = 10 end
+                if x == start_step then lv = 15 end
+                if active_step and x == active_step then lv = 12 end
+                self:grid_led(x, dyn_row, lv)
+            end
+        elseif self.beat_repeat_mode == "one-handed" then
             for x = 1, 16 do self:grid_led(x, dyn_row, 1) end
             for _, col in ipairs({ 13, 14, 15, 16 }) do
                 self:grid_led(col, dyn_row, self:get_beat_repeat_column_for_length(rpt_len) == col and 10 or 3)
@@ -3579,29 +3787,119 @@ function App:handle_aux_grid_event(x, y, z)
     end
     if z ~= 1 then return end
 
-    self:push_undo_state()
+    local did_push = false
+    local function ensure_push()
+        if not did_push then
+            self:push_undo_state()
+            did_push = true
+        end
+    end
+
     self.held_time = now_ms()
     self.held = { t = t, s = x, y = y, was_on = tr.gates[x], aux = true }
     if tr.ties then tr.ties[x] = false end
 
-    local ratio_value = nil
-    if self.mod_held[cfg.MOD.RATIOS] and tc.type == "drum" then
+    local applied_mod = self:get_active_mod_id()
+    local applied_value = nil
+    if self.mod_held[cfg.MOD.MUTE] then
+        tr.muted = not tr.muted
+        applied_value = tr.muted and "on" or "off"
+    elseif self.mod_held[cfg.MOD.SOLO] then
+        tr.solo = not tr.solo
+        self:update_solo()
+        applied_value = tr.solo and "on" or "off"
+    elseif self.mod_held[cfg.MOD.START] then
+        tr.start_step = x
+        self.track_steps[t] = 1
+        applied_value = tostring(x)
+    elseif self.mod_held[cfg.MOD.END_STEP] then
+        tr.end_step = x
+        applied_value = tostring(x)
+    elseif self.mod_held[cfg.MOD.BEAT_RPT] then
+        self.beat_repeat_excluded[t] = not self.beat_repeat_excluded[t]
+        applied_value = self.beat_repeat_excluded[t] and "exclude" or "include"
+    elseif self.mod_held[cfg.MOD.SPICE] and self.spice_pending_amount then
+        ensure_push()
+        if tr.gates[x] then self.spice[t][x] = { amount = self.spice_pending_amount, current = 0 } end
+        applied_value = tostring(self.spice_pending_amount)
+    elseif self.mod_held[cfg.MOD.CLEAR] and self.mod_held[cfg.MOD.SHIFT] then
+        ensure_push()
+        self:clear_all_tracks()
+        applied_value = "all"
+    elseif self.mod_held[cfg.MOD.CLEAR] then
+        ensure_push()
+        self:clear_track(t)
+        applied_value = "track"
+    elseif self.mod_held[cfg.MOD.RATIOS] and tc.type == "drum" then
+        ensure_push()
         tr.gates[x] = true
         tr.vels[x] = self:aux_row_to_vel_level(y)
-        ratio_value = self:apply_pending_ratio_to_step(t, x)
+        applied_value = self:apply_pending_ratio_to_step(t, x)
     elseif self.mod_held[cfg.MOD.RATIOS] and tc.type == "poly" then
+        ensure_push()
         tr.pitches[x] = self:poly_toggle_aux_degree(t, self:poly_active_pitches(tr, x), self:aux_row_to_degree(y))
         tr.gates[x] = (#tr.pitches[x] > 0)
         if tr.gates[x] then
             tr.vels[x] = clamp(tonumber(tr.vels[x]) or self:get_track_default_vel_level(t), 1, 15)
-            ratio_value = self:apply_pending_ratio_to_step(t, x)
+            applied_value = self:apply_pending_ratio_to_step(t, x)
+        else
+            applied_value = "off"
         end
     elseif self.mod_held[cfg.MOD.RATIOS] then
+        ensure_push()
         tr.gates[x] = true
         tr.vels[x] = clamp(tonumber(tr.vels[x]) or self:get_track_default_vel_level(t), 1, 15)
         tr.pitches[x] = self:aux_row_to_degree(y)
-        ratio_value = self:apply_pending_ratio_to_step(t, x)
+        applied_value = self:apply_pending_ratio_to_step(t, x)
+    elseif self:mod_active(cfg.MOD.TEMP) and self:is_temp_button_fill_mode() then
+        ensure_push()
+        local fill_vel = self:aux_row_to_vel_level(y)
+        local fill_pitch = self:aux_row_to_degree(y)
+        if self.fill_patterns[t][x] then
+            self.fill_patterns[t][x] = nil
+            applied_value = "off"
+        else
+            local fp = tr.pitches[x] or 1
+            if type(fp) == "table" then fp = fp[1] or 1 end
+            self.fill_patterns[t][x] = {
+                vel = (tc.type == "drum") and fill_vel or self:get_track_default_vel_level(t),
+                pitch = (tc.type == "drum") and fp or fill_pitch
+            }
+            applied_value = (tc.type == "drum") and ("vel " .. tostring(fill_vel)) or ("deg " .. tostring(fill_pitch))
+        end
+    elseif self:mod_active(cfg.MOD.TEMP) then
+        ensure_push()
+        local degree = self:aux_row_to_degree(y)
+        local level = self:aux_row_to_vel_level(y)
+        local was_off = not tr.gates[x]
+        if not tr.gates[x] then
+            tr.gates[x] = true
+            tr.vels[x] = self:get_track_default_vel_level(t)
+            if tc.type == "poly" and type(tr.pitches[x]) ~= "table" then tr.pitches[x] = { 1 } end
+        end
+
+        if tc.type == "drum" then
+            tr.vels[x] = level
+            applied_value = "vel " .. tostring(level)
+        elseif tc.type == "poly" then
+            tr.pitches[x] = self:poly_toggle_aux_degree(t, self:poly_active_pitches(tr, x), degree)
+            tr.gates[x] = (#tr.pitches[x] > 0)
+            applied_value = "deg " .. tostring(degree)
+        else
+            tr.pitches[x] = degree
+            tr.gates[x] = true
+            applied_value = "deg " .. tostring(degree)
+        end
+
+        if was_off and tr.gates[x] then
+            self:add_temp_step(t, x)
+        end
+    elseif self.mod_held[cfg.MOD.SPICE] and not self.spice_pending_amount then
+        ensure_push()
+        self.spice[t][x] = nil
+        applied_value = "clear"
     elseif tc.type == "drum" then
+        ensure_push()
         local next_vel = self:aux_row_to_vel_level(y)
         if tr.gates[x] and tr.vels[x] == next_vel then
             tr.gates[x] = false
@@ -3611,12 +3909,14 @@ function App:handle_aux_grid_event(x, y, z)
             tr.vels[x] = next_vel
         end
     elseif tc.type == "poly" then
+        ensure_push()
         tr.pitches[x] = self:poly_toggle_aux_degree(t, self:poly_active_pitches(tr, x), self:aux_row_to_degree(y))
         tr.gates[x] = (#tr.pitches[x] > 0)
         if tr.gates[x] then
             tr.vels[x] = clamp(tonumber(tr.vels[x]) or self:get_track_default_vel_level(t), 1, 15)
         end
     else
+        ensure_push()
         local next_degree = self:aux_row_to_degree(y)
         if tr.gates[x] and self:get_closest_aux_degree(t, tr.pitches[x]) == next_degree then
             tr.gates[x] = false
@@ -3632,7 +3932,10 @@ function App:handle_aux_grid_event(x, y, z)
         self:apply_held_gate_span(t, prev_held.s, x, x)
     end
 
-    if ratio_value then self:flash_mod_applied(cfg.MOD.RATIOS, ratio_value) end
+    if applied_mod then
+        self:flash_mod_applied(applied_mod, applied_value or self:get_active_mod_value(applied_mod))
+    end
+    if not self.mod_held[cfg.MOD.SPICE] then self.spice_pending_amount = nil end
     self:request_arc_redraw()
     self:request_redraw()
 end

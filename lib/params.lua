@@ -5,7 +5,7 @@ local M = {}
 
 local SCALE_NAMES = { "chromatic", "diatonic", "pentatonic", "lightbath" }
 local TRACK_TYPES = { "drum", "mono", "poly" }
-local BEAT_REPEAT_MODES = { "full-row", "one-handed" }
+local BEAT_REPEAT_MODES = { "full-row", "one-handed", "step-select" }
 local SCALE_DEGREE_LABELS = {
     diatonic = { "I", "ii", "iii", "IV", "V", "vi", "vii" },
     pentatonic = { "I", "ii", "iii", "V", "vi" },
@@ -205,6 +205,9 @@ function M.setup(app)
     params:add_option("permute_beat_repeat_mode", "b. repeat mode", BEAT_REPEAT_MODES, 1)
     params:set_action("permute_beat_repeat_mode", function(v)
         app.beat_repeat_mode = BEAT_REPEAT_MODES[v] or BEAT_REPEAT_MODES[1]
+        app.beat_repeat_len = 0
+        app.beat_repeat_excluded = {}
+        if app.reset_step_select_repeat then app:reset_step_select_repeat() end
         app:request_redraw()
     end)
 
