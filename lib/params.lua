@@ -286,7 +286,7 @@ function M.setup(app)
         local tc = app.track_cfg[track]
         local gid = "permute_track_" .. track
 
-        params:add_group(gid, "track " .. track .. " config", 5)
+        params:add_group(gid, "track " .. track .. " config", 6)
 
         local type_idx = 1
         for i, v in ipairs(TRACK_TYPES) do
@@ -333,6 +333,11 @@ function M.setup(app)
             local next_len = clamp(tonumber(v) or app.track_gate_ticks[track] or 1, 1, 24)
             if app.push_undo_state and app.track_gate_ticks[track] ~= next_len then app:push_undo_state() end
             app.track_gate_ticks[track] = next_len
+        end)
+
+        params:add_option(gid .. "_hold_tie_len", "hold tie length", { "off", "on" }, app.track_hold_tie_len_enabled[track] and 2 or 1)
+        params:set_action(gid .. "_hold_tie_len", function(v)
+            app.track_hold_tie_len_enabled[track] = (v == 2)
         end)
     end
 

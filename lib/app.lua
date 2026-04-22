@@ -142,8 +142,12 @@ function App.new()
     self.spice_accum_min = cfg.SPICE_MIN
     self.spice_accum_max = cfg.SPICE_MAX
     self.track_transpose = {}
+    self.track_rand_gate_prob = {}
+    self.track_rand_pitch_prob = {}
+    self.track_rand_pitch_span = {}
     self.transpose_mode = "semitone"
     self.transpose_takeover_mode = false
+    self.transpose_seq_enabled = false
     self.transpose_seq_steps = {}
     self.transpose_seq_selected_step = 1
     self.transpose_seq_assign = {}
@@ -155,6 +159,7 @@ function App.new()
     self.transpose_seq_hold_start = nil
     self.track_default_vel = {}
     self.track_gate_ticks = {}
+    self.track_hold_tie_len_enabled = {}
     self.undo_stack = {}
     self.redo_stack = {}
     self.history_limit = 5
@@ -243,10 +248,14 @@ function App.new()
         self.ratios[t] = {}
         self.spice[t] = {}
         self.track_transpose[t] = 0
+        self.track_rand_gate_prob[t] = 0
+        self.track_rand_pitch_prob[t] = 0
+        self.track_rand_pitch_span[t] = 0
         self.transpose_seq_assign[t] = (self.track_cfg[t].type ~= "drum")
         self.track_default_vel[t] = self:vel_to_midi(cfg.DEFAULT_VEL_LEVEL)
         self.track_gate_ticks[t] = (self.track_cfg[t].type == "drum") and self.drum_gate_clocks or
             self.melody_gate_clocks
+        self.track_hold_tie_len_enabled[t] = true
     end
 
     for s = 1, cfg.NUM_STEPS do
@@ -313,6 +322,7 @@ function App:default_setup_param_ids()
         ids[#ids + 1] = gid .. "_note"
         ids[#ids + 1] = gid .. "_vel"
         ids[#ids + 1] = gid .. "_len"
+        ids[#ids + 1] = gid .. "_hold_tie_len"
     end
 
     return ids
@@ -555,14 +565,13 @@ function App:get_transpose_seq_current_degree()
 end
 
 function App:is_transpose_seq_active_for_track(track)
-    return self.takeover_mode
-        and self.transpose_takeover_mode
+    return self.transpose_seq_enabled
         and self:is_track_melodic(track)
         and not not self.transpose_seq_assign[track]
 end
 
 function App:update_transpose_seq_clock()
-    if not (self.takeover_mode and self.transpose_takeover_mode) then return end
+    if not self.transpose_seq_enabled then return end
     local mult = clamp(tonumber(self.transpose_seq_clock_mult) or 1, 1, 8)
     local div = clamp(tonumber(self.transpose_seq_clock_div) or 4, 1, 16)
     self.transpose_seq_clock_phase = (tonumber(self.transpose_seq_clock_phase) or 0) + (mult / div)
@@ -599,6 +608,59 @@ function App:apply_transpose_seq_hold_span(start_step, end_step)
     local degree = clamp(tonumber(anchor.degree) or 1, 1, 16)
     for s = lo, hi do
         self.transpose_seq_steps[s] = { active = true, degree = degree }
+    end
+end
+
+function App:rand_prob_from_column(x)
+    local col = clamp(tonumber(x) or 1, 1, 16)
+    return (col - 1) / 15
+end
+
+function App:rand_column_from_prob(prob)
+    local p = clamp(tonumber(prob) or 0, 0, 1)
+    return clamp(math.floor((p * 15) + 1 + 0.5), 1, 16)
+end
+
+function App:apply_track_evolving_randomization(track)
+    local t = clamp(tonumber(track) or 1, 1, cfg.NUM_TRACKS)
+    local tr = self:ensure_track_state(t)
+    local tc = self.track_cfg[t]
+    if not tr or not tc then return end
+
+    local gate_prob = clamp(tonumber(self.track_rand_gate_prob[t]) or 0, 0, 1)
+    if gate_prob > 0 then
+        for s = 1, cfg.NUM_STEPS do
+            if math.random() < gate_prob then
+                tr.gates[s] = not tr.gates[s]
+                if tr.ties then tr.ties[s] = false end
+                if tr.gates[s] and tc.type == "poly" and type(tr.pitches[s]) ~= "table" then
+                    tr.pitches[s] = { 1 }
+                end
+            end
+        end
+    end
+
+    local pitch_prob = clamp(tonumber(self.track_rand_pitch_prob[t]) or 0, 0, 1)
+    local pitch_span = clamp(tonumber(self.track_rand_pitch_span[t]) or 0, 0, 15)
+    if pitch_prob <= 0 or pitch_span <= 0 then return end
+
+    for s = 1, cfg.NUM_STEPS do
+        if tr.gates[s] and math.random() < pitch_prob then
+            local delta = math.random(1, pitch_span)
+            if math.random(1, 2) == 1 then delta = -delta end
+            if tc.type == "drum" then
+                tr.vels[s] = clamp((tonumber(tr.vels[s]) or self:get_track_default_vel_level(t)) + delta, 1, 15)
+            elseif tc.type == "poly" then
+                local pv = tr.pitches[s]
+                if type(pv) ~= "table" then pv = { clamp(tonumber(pv) or 1, 1, 16) } end
+                for i = 1, #pv do
+                    pv[i] = clamp((tonumber(pv[i]) or 1) + delta, 1, 16)
+                end
+                tr.pitches[s] = pv
+            else
+                tr.pitches[s] = clamp((tonumber(tr.pitches[s]) or 1) + delta, 1, 16)
+            end
+        end
     end
 end
 
@@ -782,8 +844,12 @@ function App:export_state()
         track_clock_div = deep_copy_table(self.track_clock_div),
         track_clock_mult = deep_copy_table(self.track_clock_mult),
         track_transpose = deep_copy_table(self.track_transpose),
+        track_rand_gate_prob = deep_copy_table(self.track_rand_gate_prob),
+        track_rand_pitch_prob = deep_copy_table(self.track_rand_pitch_prob),
+        track_rand_pitch_span = deep_copy_table(self.track_rand_pitch_span),
         transpose_mode = self.transpose_mode,
         transpose_takeover_mode = self.transpose_takeover_mode,
+        transpose_seq_enabled = self.transpose_seq_enabled,
         transpose_seq_steps = deep_copy_table(self.transpose_seq_steps),
         transpose_seq_selected_step = self.transpose_seq_selected_step,
         transpose_seq_assign = deep_copy_table(self.transpose_seq_assign),
@@ -791,6 +857,7 @@ function App:export_state()
         transpose_seq_clock_div = self.transpose_seq_clock_div,
         transpose_seq_step = self.transpose_seq_step,
         track_gate_ticks = deep_copy_table(self.track_gate_ticks),
+        track_hold_tie_len_enabled = deep_copy_table(self.track_hold_tie_len_enabled),
         fill_patterns = deep_copy_table(self.fill_patterns),
         ratios = deep_copy_table(self.ratios),
         spice = deep_copy_table(self.spice),
@@ -828,9 +895,21 @@ function App:import_state(state)
     if type(state.track_clock_div) == "table" then self.track_clock_div = deep_copy_table(state.track_clock_div) end
     if type(state.track_clock_mult) == "table" then self.track_clock_mult = deep_copy_table(state.track_clock_mult) end
     if type(state.track_transpose) == "table" then self.track_transpose = deep_copy_table(state.track_transpose) end
+    if type(state.track_rand_gate_prob) == "table" then
+        self.track_rand_gate_prob = deep_copy_table(state.track_rand_gate_prob)
+    end
+    if type(state.track_rand_pitch_prob) == "table" then
+        self.track_rand_pitch_prob = deep_copy_table(state.track_rand_pitch_prob)
+    end
+    if type(state.track_rand_pitch_span) == "table" then
+        self.track_rand_pitch_span = deep_copy_table(state.track_rand_pitch_span)
+    end
     if type(state.transpose_seq_steps) == "table" then self.transpose_seq_steps = deep_copy_table(state.transpose_seq_steps) end
     if type(state.transpose_seq_assign) == "table" then self.transpose_seq_assign = deep_copy_table(state.transpose_seq_assign) end
     if type(state.track_gate_ticks) == "table" then self.track_gate_ticks = deep_copy_table(state.track_gate_ticks) end
+    if type(state.track_hold_tie_len_enabled) == "table" then
+        self.track_hold_tie_len_enabled = deep_copy_table(state.track_hold_tie_len_enabled)
+    end
     if type(state.fill_patterns) == "table" then self.fill_patterns = deep_copy_table(state.fill_patterns) end
     if type(state.ratios) == "table" then self.ratios = deep_copy_table(state.ratios) end
     if type(state.spice) == "table" then self.spice = deep_copy_table(state.spice) end
@@ -858,6 +937,11 @@ function App:import_state(state)
     self.key_transpose = clamp(tonumber(state.key_transpose) or self.key_transpose or 0, -7, 8)
     self.transpose_mode = (state.transpose_mode == "scale degree") and "scale degree" or "semitone"
     self.transpose_takeover_mode = not not state.transpose_takeover_mode
+    if state.transpose_seq_enabled ~= nil then
+        self.transpose_seq_enabled = not not state.transpose_seq_enabled
+    else
+        self.transpose_seq_enabled = self.transpose_takeover_mode
+    end
     self.transpose_seq_selected_step = clamp(tonumber(state.transpose_seq_selected_step) or self.transpose_seq_selected_step or 1, 1,
         cfg.NUM_STEPS)
     self.transpose_seq_clock_mult = clamp(tonumber(state.transpose_seq_clock_mult) or self.transpose_seq_clock_mult or 1, 1, 8)
@@ -886,6 +970,9 @@ function App:import_state(state)
         if not self.track_clock_mult[t] then self.track_clock_mult[t] = 1 end
         if not self.track_clock_phase[t] then self.track_clock_phase[t] = 0 end
         if not self.track_transpose[t] then self.track_transpose[t] = 0 end
+        self.track_rand_gate_prob[t] = clamp(tonumber(self.track_rand_gate_prob[t]) or 0, 0, 1)
+        self.track_rand_pitch_prob[t] = clamp(tonumber(self.track_rand_pitch_prob[t]) or 0, 0, 1)
+        self.track_rand_pitch_span[t] = clamp(tonumber(self.track_rand_pitch_span[t]) or 0, 0, 15)
         if not self.track_gate_ticks[t] then
             self.track_gate_ticks[t] = (self.track_cfg[t].type == "drum") and self.drum_gate_clocks or
                 self.melody_gate_clocks
@@ -894,6 +981,8 @@ function App:import_state(state)
             self.transpose_seq_assign[t] = (self.track_cfg[t].type ~= "drum")
         end
         self.track_gate_ticks[t] = clamp(tonumber(self.track_gate_ticks[t]) or 1, 1, 24)
+        if self.track_hold_tie_len_enabled[t] == nil then self.track_hold_tie_len_enabled[t] = true end
+        self.track_hold_tie_len_enabled[t] = not not self.track_hold_tie_len_enabled[t]
         if not self.fill_patterns[t] then self.fill_patterns[t] = {} end
         if not self.ratios[t] then self.ratios[t] = {} end
         if not self.spice[t] then self.spice[t] = {} end
@@ -1659,6 +1748,7 @@ function App:handle_mod_row(x, z)
             if not self.sel_track then self.sel_track = 1 end
             self.takeover_mode = true
             self.transpose_takeover_mode = not self.transpose_takeover_mode
+            self.transpose_seq_enabled = self.transpose_takeover_mode
             self:flash_mod_applied(cfg.MOD.TAKEOVER, self.transpose_takeover_mode and "tr seq" or "takeover")
         elseif self.mod_held[cfg.MOD.SHIFT] then
             self.realtime_play_mode = not self.realtime_play_mode
@@ -1666,6 +1756,7 @@ function App:handle_mod_row(x, z)
             if self.realtime_play_mode then
                 self.takeover_mode = false
                 self.transpose_takeover_mode = false
+                self.transpose_seq_enabled = false
             end
             self:flash_mod_applied(cfg.MOD.TAKEOVER, self.realtime_play_mode and "play on" or "play off")
         else
@@ -1843,6 +1934,14 @@ function App:handle_dynamic_row(x, z)
                 self:load_from_slot(x - 8)
                 applied_value = "load " .. tostring(x - 8)
             end
+        elseif self.mod_held[cfg.MOD.SHIFT] and self.mod_held[cfg.MOD.RAND_STEPS] and self.sel_track then
+            self.track_rand_gate_prob[self.sel_track] = self:rand_prob_from_column(x)
+            applied_value = tostring(math.floor((self.track_rand_gate_prob[self.sel_track] * 100) + 0.5)) .. "%"
+        elseif self.mod_held[cfg.MOD.SHIFT] and self.mod_held[cfg.MOD.RAND_NOTES] and self.sel_track then
+            self.track_rand_pitch_prob[self.sel_track] = self:rand_prob_from_column(x)
+            self.track_rand_pitch_span[self.sel_track] = x - 1
+            applied_value = tostring(math.floor((self.track_rand_pitch_prob[self.sel_track] * 100) + 0.5)) ..
+                "%/" .. tostring(self.track_rand_pitch_span[self.sel_track])
         elseif self.mod_held[cfg.MOD.RATIOS] then
             if x <= 8 then
                 self:set_ratio_position(x)
@@ -2207,6 +2306,7 @@ end
 
 function App:apply_held_gate_span(track, anchor_step, target_step, preserve_step)
     local t = clamp(tonumber(track) or 1, 1, cfg.NUM_TRACKS)
+    if not self.track_hold_tie_len_enabled[t] then return end
     local from_step = clamp(tonumber(anchor_step) or 1, 1, cfg.NUM_STEPS)
     local to_step = clamp(tonumber(target_step) or 1, 1, cfg.NUM_STEPS)
     if from_step == to_step then return end
@@ -2691,6 +2791,7 @@ function App:play_tracks(pulse_scale)
 
             local ts = tonumber(self.track_steps[t]) or 1
             if len > 0 and ts % len == 0 then
+                self:apply_track_evolving_randomization(t)
                 self.track_loop_count[t] = (tonumber(self.track_loop_count[t]) or 1) + 1
             end
             self.track_steps[t] = ts + 1
@@ -3045,6 +3146,11 @@ function App:clear_modifier_for_track(mod, t)
         self.fill_patterns[t] = {}
     elseif mod == cfg.MOD.RATIOS then
         self.ratios[t] = {}
+    elseif mod == cfg.MOD.RAND_STEPS then
+        self.track_rand_gate_prob[t] = 0
+    elseif mod == cfg.MOD.RAND_NOTES then
+        self.track_rand_pitch_prob[t] = 0
+        self.track_rand_pitch_span[t] = 0
     end
 end
 
@@ -3103,6 +3209,30 @@ function App:draw_dynamic_row()
                 self:grid_led(x, dyn_row, 15)
             elseif x == 8 then
                 self:grid_led(x, dyn_row, 5)
+            else
+                self:grid_led(x, dyn_row, 2)
+            end
+        end
+        return
+    end
+
+    if self.mod_held[cfg.MOD.SHIFT] and self.mod_held[cfg.MOD.RAND_STEPS] and self.sel_track then
+        local col = self:rand_column_from_prob(self.track_rand_gate_prob[self.sel_track])
+        for x = 1, 16 do
+            if x <= col then
+                self:grid_led(x, dyn_row, x == col and 15 or 10)
+            else
+                self:grid_led(x, dyn_row, 2)
+            end
+        end
+        return
+    end
+
+    if self.mod_held[cfg.MOD.SHIFT] and self.mod_held[cfg.MOD.RAND_NOTES] and self.sel_track then
+        local col = clamp((tonumber(self.track_rand_pitch_span[self.sel_track]) or 0) + 1, 1, 16)
+        for x = 1, 16 do
+            if x <= col then
+                self:grid_led(x, dyn_row, x == col and 15 or 10)
             else
                 self:grid_led(x, dyn_row, 2)
             end
