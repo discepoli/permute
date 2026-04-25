@@ -1,3 +1,5 @@
 .DS_Store
-/plans
 .factory
+/plans
+/test
+Makefile
