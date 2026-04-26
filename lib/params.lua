@@ -6,18 +6,50 @@ local M = {}
 local SCALE_NAMES = { "chromatic", "diatonic", "pentatonic", "lightbath" }
 local TRACK_TYPES = { "drum", "mono", "poly" }
 local BEAT_REPEAT_MODES = { "full-row", "one-handed", "step-select" }
+local TRANSPOSE_MODES = { "semitone", "scale degree" }
+local RESET_TIMING_OPTIONS = { "instant", "next beat" }
 local SCALE_DEGREE_LABELS = {
     diatonic = { "I", "ii", "iii", "IV", "V", "vi", "vii" },
     pentatonic = { "I", "ii", "iii", "V", "vi" },
     lightbath = { "I", "ii", "V", "vi" }
 }
 
-local function clamp(v, lo, hi)
-    if v == nil then return lo end
-    if v < lo then return lo end
-    if v > hi then return hi end
-    return v
-end
+local DEFAULT_SETUP_BASE_IDS = {
+    "permute_scale",
+    "permute_key",
+    "permute_scale_degree",
+    "permute_tempo",
+    "permute_master_len_enabled",
+    "permute_master_len",
+    "permute_reset_timing",
+    "permute_ext_clock",
+    "permute_send_clock_out",
+    "permute_send_start_stop_out",
+    "permute_clock_debug",
+    "permute_midi_out",
+    "permute_midi_out_2",
+    "permute_midi_out_3",
+    "permute_midi_out_4",
+    "permute_melody_gate_ticks",
+    "permute_drum_gate_ticks",
+    "permute_spice_accum_min",
+    "permute_spice_accum_max",
+    "permute_crow_enabled",
+    "permute_crow_track_1",
+    "permute_crow_track_2",
+    "permute_redraw_fps",
+    "permute_screen_orientation",
+    "permute_transpose_mode",
+    "permute_beat_repeat_mode",
+    "permute_beat_repeat_direction",
+    "permute_temp_button_mode",
+    "permute_arc_k1_threshold",
+    "permute_arc_k2_threshold",
+    "permute_arc_k3_threshold",
+    "permute_arc_k4_threshold",
+}
+
+local clamp = util.clamp
 
 local function midi_port_options(include_off)
     local out = {}
@@ -44,7 +76,7 @@ function M.setup(app)
     local prev_action_read = params.action_read
     local prev_action_delete = params.action_delete
 
-    params:add_group("permute_seq", "permute", 35)
+    params:add_group("permute_seq", "permute", 38)
 
     params:add_option("permute_scale", "scale", SCALE_NAMES, 2)
     params:set_action("permute_scale", function(v)
@@ -55,7 +87,9 @@ function M.setup(app)
         else
             app.scale_degree = 1
         end
+        app:invalidate_aux_degree_cache()
         app:request_redraw()
+        app:request_aux_redraw()
     end)
 
     params:add_number("permute_key", "key", 0, 11, 0, function(param)
@@ -66,6 +100,7 @@ function M.setup(app)
     params:set_action("permute_key", function(v)
         app.key_root = v
         app:request_redraw()
+        app:request_aux_redraw()
     end)
 
     params:add_number("permute_scale_degree", "scale degree", 1, 7, 1, function(param)
@@ -75,7 +110,9 @@ function M.setup(app)
         if app.scale_type ~= "chromatic" then
             local labels = SCALE_DEGREE_LABELS[app.scale_type] or SCALE_DEGREE_LABELS.diatonic
             app.scale_degree = clamp(tonumber(v) or 1, 1, #labels)
+            app:invalidate_aux_degree_cache()
             app:request_redraw()
+            app:request_aux_redraw()
         end
     end)
 
@@ -98,11 +135,26 @@ function M.setup(app)
         app.master_seq_counter = 0
     end)
 
+    params:add_option("permute_reset_timing", "reset timing", RESET_TIMING_OPTIONS, 1)
+    params:set_action("permute_reset_timing", function(v)
+        app.reset_timing = RESET_TIMING_OPTIONS[v] or "instant"
+        if app.reset_timing ~= "next beat" then
+            app.pending_transport_align_on_beat = false
+            app.pending_meta_reset_on_beat = false
+        end
+        app:request_redraw()
+    end)
+
     params:add_option("permute_ext_clock", "external midi clock", { "off", "on" }, 1)
     params:set_action("permute_ext_clock", function(v)
         app.use_midi_clock = (v == 2)
         app:restart_transport_if_needed()
         app:request_redraw()
+        if app.clock_debug_enabled and app.clock_debug_log then
+            app:clock_debug_log(string.format("[%s] mode changed -> %s",
+                os.date("%H:%M:%S"),
+                app.use_midi_clock and "external" or "internal"))
+        end
     end)
 
     params:add_option("permute_send_clock_out", "send midi clock out", { "off", "on" }, 2)
@@ -113,6 +165,11 @@ function M.setup(app)
     params:add_option("permute_send_start_stop_out", "send midi start/stop out", { "off", "on" }, 2)
     params:set_action("permute_send_start_stop_out", function(v)
         app.send_midi_start_stop_out = (v == 2)
+    end)
+
+    params:add_option("permute_clock_debug", "clock debug", { "off", "on" }, 1)
+    params:set_action("permute_clock_debug", function(v)
+        app:set_clock_debug_enabled(v == 2)
     end)
 
     params:add_option("permute_midi_out", "midi out port", midi_port_options(), 1)
@@ -190,7 +247,7 @@ function M.setup(app)
         app.crow_track_2 = v
     end)
 
-    params:add_number("permute_redraw_fps", "redraw fps", 10, 60, 60)
+    params:add_number("permute_redraw_fps", "redraw fps", 10, 60, 30)
     params:set_action("permute_redraw_fps", function(v)
         app:redraw_rate(v)
     end)
@@ -209,12 +266,21 @@ function M.setup(app)
         app.beat_repeat_excluded = {}
         if app.reset_step_select_repeat then app:reset_step_select_repeat() end
         app:request_redraw()
+        app:request_aux_redraw()
     end)
 
     params:add_option("permute_beat_repeat_direction", "b. repeat direction", { "l->r", "l<-r" }, 1)
     params:set_action("permute_beat_repeat_direction", function(v)
         app.beat_repeat_direction = (v == 2) and "l<-r" or "l->r"
         app:request_redraw()
+        app:request_aux_redraw()
+    end)
+
+    params:add_option("permute_transpose_mode", "transpose mode", TRANSPOSE_MODES, 1)
+    params:set_action("permute_transpose_mode", function(v)
+        app.transpose_mode = TRANSPOSE_MODES[v] or TRANSPOSE_MODES[1]
+        app:request_redraw()
+        app:request_aux_redraw()
     end)
 
     params:add_option("permute_temp_button_mode", "temp button mode", { "temp", "fill" }, 1)
@@ -226,6 +292,7 @@ function M.setup(app)
         app.fill_applied = false
         app.temp_steps = {}
         app:request_redraw()
+        app:request_aux_redraw()
     end)
 
     params:add_number("permute_arc_k1_threshold", "arc k1 threshold", 1, 32, 8)
@@ -279,7 +346,7 @@ function M.setup(app)
         local tc = app.track_cfg[track]
         local gid = "permute_track_" .. track
 
-        params:add_group(gid, "track " .. track .. " config", 5)
+        params:add_group(gid, "track " .. track .. " config", 6)
 
         local type_idx = 1
         for i, v in ipairs(TRACK_TYPES) do
@@ -327,6 +394,11 @@ function M.setup(app)
             if app.push_undo_state and app.track_gate_ticks[track] ~= next_len then app:push_undo_state() end
             app.track_gate_ticks[track] = next_len
         end)
+
+        params:add_option(gid .. "_hold_tie_len", "hold tie length", { "off", "on" }, app.track_hold_tie_len_enabled[track] and 2 or 1)
+        params:set_action(gid .. "_hold_tie_len", function(v)
+            app.track_hold_tie_len_enabled[track] = (v == 2)
+        end)
     end
 
     params.action_write = function(filename, name, number)
@@ -346,6 +418,23 @@ function M.setup(app)
 
     params:set("permute_tempo", cfg.DEFAULT_TEMPO_BPM)
     params:bang()
+end
+
+function M.default_setup_param_ids(num_tracks)
+    local ids = {}
+    for i = 1, #DEFAULT_SETUP_BASE_IDS do
+        ids[#ids + 1] = DEFAULT_SETUP_BASE_IDS[i]
+    end
+    for t = 1, (num_tracks or cfg.NUM_TRACKS) do
+        local gid = "permute_track_" .. t
+        ids[#ids + 1] = gid .. "_type"
+        ids[#ids + 1] = gid .. "_ch"
+        ids[#ids + 1] = gid .. "_note"
+        ids[#ids + 1] = gid .. "_vel"
+        ids[#ids + 1] = gid .. "_len"
+        ids[#ids + 1] = gid .. "_hold_tie_len"
+    end
+    return ids
 end
 
 return M

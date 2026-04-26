@@ -5,6 +5,8 @@ M.DEFAULT_VEL_LEVEL = 12
 M.DEFAULT_MELODIC_BASE_NOTE = 48
 M.DEFAULT_MASTER_SEQ_LEN = 128
 M.MAX_MASTER_SEQ_LEN = 1024
+M.DEFAULT_HOLD_THRESHOLD_MS = 150
+M.DEFAULT_REDRAW_MIN_MS = 20
 
 M.NUM_TRACKS = 14
 M.NUM_STEPS = 16
@@ -61,5 +63,31 @@ M.SPICE_MIN = -7
 M.SPICE_MAX = 7
 
 M.MIDI_CLOCK_TICKS_PER_STEP = 6
+M.TRACK_SELECT_MOD = 5
+
+M.ARC_VARIANCE_MODES = {
+  "triangle",
+  "ramp down",
+  "ramp up",
+  "random",
+  "cadence 1",
+  "cadence 2",
+  "cadence 3",
+  "cadence 4"
+}
+
+M.ARC_CADENCE_SHAPES = {
+  { -1,    -0.33, 0.33,  1 },
+  { -1,    -0.66, -0.33, 1 },
+  { -0.66, 0.33,  0.66,  -1, -0.66, 0.33 },
+  { -0.33, 0.33,  0.33,  -1, -0.66, -0.33 }
+}
+
+M.ARC_DELTA_THRESHOLDS = {
+  [1] = 8,
+  [2] = 12,
+  [3] = 2,
+  [4] = 16
+}
 
 return M

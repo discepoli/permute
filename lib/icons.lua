@@ -364,58 +364,48 @@ local function draw_clock_rate(cx, cy, fg, dim)
   screen.fill()
 end
 
-function Icons.draw(mod_id, cx, cy, fg, dim, state)
-  if mod_id == 1 then
-    draw_mute(cx, cy, fg, dim)
-  elseif mod_id == 2 then
-    draw_solo(cx, cy, fg, dim)
-  elseif mod_id == 3 then
-    draw_traffic(cx, cy, fg, dim, false, true)
-  elseif mod_id == 4 then
-    draw_traffic(cx, cy, fg, dim, true, false)
-  elseif mod_id == 5 then
-    draw_track_select(cx, cy, fg, dim, state)
-  elseif mod_id == 6 then
-    draw_rand_notes(cx, cy, fg, dim, state)
-  elseif mod_id == 7 then
-    draw_rand_steps(cx, cy, fg, dim, state)
-  elseif mod_id == 8 then
+local DRAWERS = {
+  [1] = draw_mute,
+  [2] = draw_solo,
+  [3] = function(cx, cy, fg, dim) draw_traffic(cx, cy, fg, dim, false, true) end,
+  [4] = function(cx, cy, fg, dim) draw_traffic(cx, cy, fg, dim, true, false) end,
+  [5] = draw_track_select,
+  [6] = draw_rand_notes,
+  [7] = draw_rand_steps,
+  [8] = function(cx, cy, fg, dim, state)
     if state and state.temp_button_mode == "fill" then
       draw_fill(cx, cy, fg, dim, state)
     else
       draw_temp(cx, cy, fg, dim)
     end
-  elseif mod_id == 9 then
-    draw_clock_rate(cx, cy, fg, dim)
-  elseif mod_id == 10 then
-    draw_shift(cx, cy, fg)
-  elseif mod_id == 11 then
-    draw_octave(cx, cy, fg, dim)
-  elseif mod_id == 12 then
-    draw_transpose(cx, cy, fg, dim)
-  elseif mod_id == 13 then
-    draw_takeover(cx, cy, fg, dim)
-  elseif mod_id == 14 then
-    draw_clear(cx, cy, fg, dim)
-  elseif mod_id == 15 then
-    draw_spice(cx, cy, fg, dim)
-  elseif mod_id == 16 then
-    draw_beat_repeat(cx, cy, fg, dim)
-  else
-    return false
-  end
+  end,
+  [9] = draw_clock_rate,
+  [10] = draw_shift,
+  [11] = draw_octave,
+  [12] = draw_transpose,
+  [13] = draw_takeover,
+  [14] = draw_clear,
+  [15] = draw_spice,
+  [16] = draw_beat_repeat,
+}
+
+local SPECIAL = {
+  random_sequence = draw_random_sequence,
+  clock_rate = draw_clock_rate,
+}
+
+function Icons.draw(mod_id, cx, cy, fg, dim, state)
+  local drawer = DRAWERS[mod_id]
+  if not drawer then return false end
+  drawer(cx, cy, fg, dim, state)
   return true
 end
 
 function Icons.draw_special(name, cx, cy, fg, dim, state)
-  if name == "random_sequence" then
-    draw_random_sequence(cx, cy, fg, dim, state)
-    return true
-  elseif name == "clock_rate" then
-    draw_clock_rate(cx, cy, fg, dim)
-    return true
-  end
-  return false
+  local drawer = SPECIAL[name]
+  if not drawer then return false end
+  drawer(cx, cy, fg, dim, state)
+  return true
 end
 
 return Icons
