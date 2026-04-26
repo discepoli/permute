@@ -264,8 +264,7 @@ function M.install(App)
         end
 
         if y == layout.assign_row and x == 16 then
-            self:queue_meta_reset_on_next_beat()
-            self:flash_status("meta reset", "next beat", 0.35)
+            self:trigger_meta_reset()
             self:request_redraw()
             return
         end

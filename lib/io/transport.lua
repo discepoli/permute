@@ -16,6 +16,10 @@ local TRACK_SELECT_MOD = H.TRACK_SELECT_MOD
 local M = {}
 
 function M.install(App)
+    function App:is_reset_timing_next_beat()
+        return self.reset_timing == "next beat"
+    end
+
     function App:queue_meta_reset_on_next_beat()
         self.pending_meta_reset_on_beat = true
     end
@@ -23,6 +27,31 @@ function M.install(App)
     function App:queue_transport_align_on_next_beat()
         self.pending_transport_align_on_beat = true
         self.pending_meta_reset_on_beat = true
+    end
+
+    function App:trigger_transport_reset()
+        if self:is_reset_timing_next_beat() then
+            self:queue_transport_align_on_next_beat()
+            self:flash_status("reset", "next beat", 0.35)
+            return
+        end
+
+        self.pending_transport_align_on_beat = false
+        self.pending_meta_reset_on_beat = false
+        self:reset_tracks_to_start_positions()
+        self:flash_status("reset", "now", 0.35)
+    end
+
+    function App:trigger_meta_reset()
+        if self:is_reset_timing_next_beat() then
+            self:queue_meta_reset_on_next_beat()
+            self:flash_status("meta reset", "next beat", 0.35)
+            return
+        end
+
+        self.pending_meta_reset_on_beat = false
+        self:reset_transpose_meta_sequence()
+        self:flash_status("meta reset", "now", 0.35)
     end
 
     function App:apply_pending_resets_on_step_boundary()

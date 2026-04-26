@@ -7,6 +7,7 @@ local SCALE_NAMES = { "chromatic", "diatonic", "pentatonic", "lightbath" }
 local TRACK_TYPES = { "drum", "mono", "poly" }
 local BEAT_REPEAT_MODES = { "full-row", "one-handed", "step-select" }
 local TRANSPOSE_MODES = { "semitone", "scale degree" }
+local RESET_TIMING_OPTIONS = { "instant", "next beat" }
 local SCALE_DEGREE_LABELS = {
     diatonic = { "I", "ii", "iii", "IV", "V", "vi", "vii" },
     pentatonic = { "I", "ii", "iii", "V", "vi" },
@@ -20,6 +21,7 @@ local DEFAULT_SETUP_BASE_IDS = {
     "permute_tempo",
     "permute_master_len_enabled",
     "permute_master_len",
+    "permute_reset_timing",
     "permute_ext_clock",
     "permute_send_clock_out",
     "permute_send_start_stop_out",
@@ -74,7 +76,7 @@ function M.setup(app)
     local prev_action_read = params.action_read
     local prev_action_delete = params.action_delete
 
-    params:add_group("permute_seq", "permute", 37)
+    params:add_group("permute_seq", "permute", 38)
 
     params:add_option("permute_scale", "scale", SCALE_NAMES, 2)
     params:set_action("permute_scale", function(v)
@@ -131,6 +133,16 @@ function M.setup(app)
     params:set_action("permute_master_len", function(v)
         app.master_seq_len = clamp(tonumber(v) or cfg.DEFAULT_MASTER_SEQ_LEN, 1, cfg.MAX_MASTER_SEQ_LEN)
         app.master_seq_counter = 0
+    end)
+
+    params:add_option("permute_reset_timing", "reset timing", RESET_TIMING_OPTIONS, 1)
+    params:set_action("permute_reset_timing", function(v)
+        app.reset_timing = RESET_TIMING_OPTIONS[v] or "instant"
+        if app.reset_timing ~= "next beat" then
+            app.pending_transport_align_on_beat = false
+            app.pending_meta_reset_on_beat = false
+        end
+        app:request_redraw()
     end)
 
     params:add_option("permute_ext_clock", "external midi clock", { "off", "on" }, 1)

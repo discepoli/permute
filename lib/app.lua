@@ -13,6 +13,7 @@ function App.new()
     self.use_midi_clock = false
     self.send_midi_clock_out = true
     self.send_midi_start_stop_out = true
+    self.reset_timing = "instant"
     self.scale_type = "diatonic"
     self.key_root = 0
     self.key_transpose = 0

@@ -99,8 +99,7 @@ function M.install(App)
         if n == 2 then
             if self.playing then self:stop() else self:start() end
         elseif n == 3 then
-            self:queue_transport_align_on_next_beat()
-            self:flash_status("reset", "next beat", 0.35)
+            self:trigger_transport_reset()
         end
     end
 
