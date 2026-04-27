@@ -50,7 +50,7 @@ function M.install(App)
         end
 
         self.pending_meta_reset_on_beat = false
-        self:reset_transpose_meta_sequence()
+        self:reset_transpose_meta_transport()
         self:flash_status("meta reset", "now", 0.35)
     end
 
@@ -76,8 +76,7 @@ function M.install(App)
         end
 
         if self.pending_meta_reset_on_beat then
-            self.transpose_seq_step = 1
-            self.transpose_seq_clock_phase = 0
+            self:reset_transpose_meta_transport()
             self.pending_meta_reset_on_beat = false
             meta_reset = true
         end
