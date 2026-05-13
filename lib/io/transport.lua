@@ -318,8 +318,25 @@ function M.install(App)
                 end
             end
         end
+        if type(self.midi_in_active_notes) == "table" then
+            for _, by_channel in pairs(self.midi_in_active_notes) do
+                if type(by_channel) == "table" then
+                    for _, by_note in pairs(by_channel) do
+                        if type(by_note) == "table" then
+                            for _, nd in pairs(by_note) do
+                                if nd and nd.note then
+                                    self:midi_note_off(nd.note, 0, nd.ch, nd.ports)
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
         self.last_notes = {}
         self.active_note_offs = {}
+        self.midi_in_active_notes = {}
+        self.midi_in_record_holds = {}
     end
 
     function App:start()

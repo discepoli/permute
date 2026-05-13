@@ -49,13 +49,36 @@ function M.install(App)
         return mode, root
     end
 
-    function App:main_takeover_row_to_degree(y)
-        local rows = self:get_main_takeover_note_rows()
-        return clamp(rows - y + 1, 1, rows)
+    function App:get_scale_degree_span()
+        local scale = cfg.SCALES[self.scale_type] or cfg.SCALES.chromatic
+        return math.max(1, #scale)
     end
 
-    function App:aux_row_to_degree(y)
-        return clamp(cfg.AUX_GRID_ROWS - y + 1, 1, cfg.AUX_GRID_ROWS)
+    function App:get_track_edit_octave_page(track)
+        local t = clamp(tonumber(track) or tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+        return clamp(tonumber((self.track_edit_octave_page or {})[t]) or 0, -7, 8)
+    end
+
+    function App:get_track_edit_degree_offset(track)
+        return self:get_track_edit_octave_page(track) * self:get_scale_degree_span()
+    end
+
+    function App:get_track_visible_degree(track, local_degree)
+        local d = clamp(tonumber(local_degree) or 1, 1, cfg.AUX_GRID_ROWS)
+        return clamp(d + self:get_track_edit_degree_offset(track), cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
+    end
+
+    function App:main_takeover_row_to_degree(y, track)
+        local rows = self:get_main_takeover_note_rows()
+        local local_degree = clamp(rows - y + 1, 1, rows)
+        local absolute_degree = local_degree + self:get_track_edit_degree_offset(track)
+        return clamp(absolute_degree, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
+    end
+
+    function App:aux_row_to_degree(y, track)
+        local local_degree = clamp(cfg.AUX_GRID_ROWS - y + 1, 1, cfg.AUX_GRID_ROWS)
+        local absolute_degree = local_degree + self:get_track_edit_degree_offset(track)
+        return clamp(absolute_degree, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
     end
 
     function App:degree_to_aux_row(degree)

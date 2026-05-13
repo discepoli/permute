@@ -58,6 +58,8 @@ function App.new()
     self.mod_double_tap_ms = 250
     self.takeover_mode = false
     self.realtime_play_mode = false
+    self.external_midi_record_mode = false
+    self.track_select_focus_mode = false
     self.realtime_row_holds = {}
     self.beat_repeat_len = 0
     self.beat_repeat_mode = "full-row"
@@ -80,6 +82,7 @@ function App.new()
     self.spice_accum_min = cfg.SPICE_MIN
     self.spice_accum_max = cfg.SPICE_MAX
     self.track_transpose = {}
+    self.track_edit_octave_page = {}
     self.track_rand_gate_prob = {}
     self.track_rand_pitch_prob = {}
     self.track_rand_pitch_span = {}
@@ -150,6 +153,13 @@ function App.new()
     self.midi_out_ports_snapshot = { 1 }
     self.midi_active_ports = { [1] = true }
     self.midi_clock_in_port = nil
+    self.midi_in_port_slots = { 0, 0 }
+    self.midi_in_ports = {}
+    self.midi_in_ports_snapshot = {}
+    self.midi_in_active_ports = {}
+    self.midi_in_auto_channel = 16
+    self.midi_in_active_notes = {}
+    self.midi_in_record_holds = {}
     self.step_cache = {}
     self.step_cache_meta = {}
     self.step_cache_rev = {}
@@ -210,6 +220,7 @@ function App.new()
         self.ratios[t] = {}
         self.spice[t] = {}
         self.track_transpose[t] = 0
+        self.track_edit_octave_page[t] = 0
         self.track_rand_gate_prob[t] = 0
         self.track_rand_pitch_prob[t] = 0
         self.track_rand_pitch_span[t] = 0

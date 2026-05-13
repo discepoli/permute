@@ -30,6 +30,9 @@ local DEFAULT_SETUP_BASE_IDS = {
     "permute_midi_out_2",
     "permute_midi_out_3",
     "permute_midi_out_4",
+    "permute_midi_in",
+    "permute_midi_in_2",
+    "permute_midi_in_auto_ch",
     "permute_melody_gate_ticks",
     "permute_drum_gate_ticks",
     "permute_spice_accum_min",
@@ -76,7 +79,7 @@ function M.setup(app)
     local prev_action_read = params.action_read
     local prev_action_delete = params.action_delete
 
-    params:add_group("permute_seq", "permute", 38)
+    params:add_group("permute_seq", "permute", 41)
 
     params:add_option("permute_scale", "scale", SCALE_NAMES, 2)
     params:set_action("permute_scale", function(v)
@@ -190,6 +193,21 @@ function M.setup(app)
     params:add_option("permute_midi_out_4", "midi out port 4", midi_port_options(true), 1)
     params:set_action("permute_midi_out_4", function()
         app:connect_midi_from_params()
+    end)
+
+    params:add_option("permute_midi_in", "midi in port", midi_port_options(true), 1)
+    params:set_action("permute_midi_in", function()
+        app:connect_midi_from_params()
+    end)
+
+    params:add_option("permute_midi_in_2", "midi in port 2", midi_port_options(true), 1)
+    params:set_action("permute_midi_in_2", function()
+        app:connect_midi_from_params()
+    end)
+
+    params:add_number("permute_midi_in_auto_ch", "midi in auto channel", 1, 16, 16)
+    params:set_action("permute_midi_in_auto_ch", function(v)
+        app.midi_in_auto_channel = clamp(tonumber(v) or 16, 1, 16)
     end)
 
     params:add_number("permute_melody_gate_ticks", "melody gate ticks", 1, 24, 5)

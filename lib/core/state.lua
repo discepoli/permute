@@ -113,12 +113,12 @@ function M.install(App)
             if tc and tc.type == "poly" then
                 local pv = tr.pitches[s]
                 if type(pv) ~= "table" then
-                    pv = { clamp(tonumber(pv) or 1, 1, 16) }
+                    pv = { clamp(tonumber(pv) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE) }
                 end
                 local clean = {}
                 local seen = {}
                 for _, d in ipairs(pv) do
-                    local di = clamp(tonumber(d) or 1, 1, 16)
+                    local di = clamp(tonumber(d) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
                     if not seen[di] then
                         clean[#clean + 1] = di
                         seen[di] = true
@@ -127,7 +127,7 @@ function M.install(App)
                 if #clean == 0 then clean[1] = 1 end
                 tr.pitches[s] = clean
             else
-                tr.pitches[s] = clamp(tonumber(tr.pitches[s]) or 1, 1, 16)
+                tr.pitches[s] = clamp(tonumber(tr.pitches[s]) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
             end
         end
 
@@ -155,13 +155,13 @@ function M.install(App)
             local pv = tr.pitches[s]
             if new_type == "poly" then
                 if type(pv) ~= "table" then
-                    tr.pitches[s] = { clamp(tonumber(pv) or 1, 1, 16) }
+                    tr.pitches[s] = { clamp(tonumber(pv) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE) }
                 end
             else
                 if type(pv) == "table" then
-                    tr.pitches[s] = clamp(tonumber(pv[1]) or 1, 1, 16)
+                    tr.pitches[s] = clamp(tonumber(pv[1]) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
                 else
-                    tr.pitches[s] = clamp(tonumber(pv) or 1, 1, 16)
+                    tr.pitches[s] = clamp(tonumber(pv) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
                 end
             end
         end

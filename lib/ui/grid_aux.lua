@@ -25,21 +25,33 @@ function M.install(App)
         return clamp(cfg.AUX_GRID_ROWS - math.floor((stored - 1) / 2), 1, cfg.AUX_GRID_ROWS)
     end
 
+    function App:get_aux_degree_visibility(track, stored_degree)
+        local sd = clamp(tonumber(stored_degree) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
+        local min_degree = self:get_track_visible_degree(track, 1)
+        local max_degree = self:get_track_visible_degree(track, cfg.AUX_GRID_ROWS)
+        if min_degree > max_degree then
+            min_degree, max_degree = max_degree, min_degree
+        end
+        if sd < min_degree then return -1 end
+        if sd > max_degree then return 1 end
+        return 0
+    end
+
     function App:is_aux_degree_above_visible_octave(track, stored_degree)
-        return self:get_pitch(track, clamp(tonumber(stored_degree) or 1, 1, 16), 0)
-            > self:get_pitch(track, cfg.AUX_GRID_ROWS, 0)
+        return self:get_aux_degree_visibility(track, stored_degree) > 0
     end
 
     function App:get_closest_aux_degree(track, stored_degree)
-        local target = self:get_pitch(track, clamp(tonumber(stored_degree) or 1, 1, 16), 0)
+        local target = self:get_pitch(track, clamp(tonumber(stored_degree) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE), 0)
         local best_degree = 1
         local best_distance = nil
 
-        for degree = 1, cfg.AUX_GRID_ROWS do
-            local distance = math.abs(self:get_pitch(track, degree, 0) - target)
+        for local_degree = 1, cfg.AUX_GRID_ROWS do
+            local visible_degree = self:get_track_visible_degree(track, local_degree)
+            local distance = math.abs(self:get_pitch(track, visible_degree, 0) - target)
             if best_distance == nil or distance < best_distance then
                 best_distance = distance
-                best_degree = degree
+                best_degree = local_degree
             end
         end
 
@@ -75,7 +87,7 @@ function M.install(App)
 
     function App:get_closest_aux_degree_cached(track, stored_degree)
         local t = clamp(tonumber(track) or 1, 1, cfg.NUM_TRACKS)
-        local sd = clamp(tonumber(stored_degree) or 1, 1, 16)
+        local sd = clamp(tonumber(stored_degree) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
         if type(self.aux_degree_cache) ~= "table" then
             self.aux_degree_cache = {}
         end
@@ -244,7 +256,7 @@ function M.install(App)
                 local is_playhead = (s == current_step and self.playing)
                 local fill = fills[s]
                 local fill_degree = fill and self:get_closest_aux_degree_cached(t, fill.pitch) or nil
-                local fill_above = fill and self:is_aux_degree_above_visible_octave(t, fill.pitch) or false
+                local fill_visibility = fill and self:get_aux_degree_visibility(t, fill.pitch) or 0
                 local step_data = step_cache[s]
 
                 if (not self.realtime_play_mode) and in_range and self:is_beat_column(s) then
@@ -258,37 +270,37 @@ function M.install(App)
                     local is_root = ((degree - 1) % #scale) == 0
                     local is_on = false
                     local is_fill = false
-                    local is_above = false
+                    local is_out_of_view = false
 
                     if step_data then
                         if tc.type == "poly" then
                             for _, stored_degree in ipairs(step_data.pitch or {}) do
                                 if self:get_closest_aux_degree_cached(t, stored_degree) == degree then
                                     is_on = true
-                                    is_above = self:is_aux_degree_above_visible_octave(t, stored_degree)
+                                    is_out_of_view = self:get_aux_degree_visibility(t, stored_degree) ~= 0
                                     break
                                 end
                             end
                         else
                             is_on = self:get_closest_aux_degree_cached(t, step_data.pitch) == degree
                             if is_on then
-                                is_above = self:is_aux_degree_above_visible_octave(t, step_data.pitch)
+                                is_out_of_view = self:get_aux_degree_visibility(t, step_data.pitch) ~= 0
                             end
                         end
                     elseif fill_degree then
                         is_fill = degree == fill_degree
-                        is_above = fill_above
+                        is_out_of_view = fill_visibility ~= 0
                     end
 
                     if is_on then
                         local manual = step_data.source == "manual"
-                        local lv = is_above
+                        local lv = is_out_of_view
                             and (manual and ((is_playhead and 7) or 5) or ((is_playhead and 5) or 4))
                             or (manual and ((is_playhead and 15) or 12) or ((is_playhead and 10) or 7))
                         if not in_range then lv = math.max(1, math.floor(lv / 2)) end
                         self:aux_buf_led(next_buf, s, row, lv)
                     elseif is_fill then
-                        local lv = is_above and ((is_playhead and 6) or 4) or ((is_playhead and 10) or 6)
+                        local lv = is_out_of_view and ((is_playhead and 6) or 4) or ((is_playhead and 10) or 6)
                         if not in_range then lv = math.max(1, math.floor(lv / 2)) end
                         self:aux_buf_led(next_buf, s, row, lv)
                     elseif is_root and in_range then

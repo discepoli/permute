@@ -464,11 +464,13 @@ function M.install(App)
                         local pv = sp[s]
                         if type(pv) == "table" and #pv > 0 then
                             local cp = {}
-                            for i, d in ipairs(pv) do cp[i] = clamp(tonumber(d) or 1, 1, 16) end
+                            for i, d in ipairs(pv) do
+                                cp[i] = clamp(tonumber(d) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
+                            end
                             tr.pitches[s] = cp
                         end
                     else
-                        tr.pitches[s] = clamp(tonumber(sp[s]) or 1, 1, 16)
+                        tr.pitches[s] = clamp(tonumber(sp[s]) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
                     end
                 end
                 if sr[s] then self.ratios[t][s] = deep_copy_table(sr[s]) end
