@@ -1,7 +1,9 @@
 local H = include("lib/core/util")
 local cfg = H.cfg
 local deep_copy_table = H.deep_copy_table
+local clamp = H.clamp
 local ARC_DELTA_THRESHOLDS = H.ARC_DELTA_THRESHOLDS
+local lpp_map = include("lib/io/lpp_map")
 
 local App = {}
 App.__index = App
@@ -160,6 +162,22 @@ function App.new()
     self.midi_in_auto_channel = 16
     self.midi_in_active_notes = {}
     self.midi_in_record_holds = {}
+    self.lpp_enabled = false
+    self.lpp_input_port = 0
+    self.lpp_programmer_auto_enter = false
+    self.lpp_led_feedback = true
+    self.lpp_octave_min = -4
+    self.lpp_octave_max = 4
+    self.lpp_zone_octave = { zone_b = 0, zone_c = 0, zone_d = 0, zone_e = 0 }
+    self.lpp_zone_track = { zone_b = 11, zone_c = 12, zone_d = 13, zone_e = 14 }
+    self.lpp_zone_melodic_colors = deep_copy_table(lpp_map.zone_melodic_colors or {})
+    self.lpp_drum_track_colors = {}
+    for i = 1, 8 do
+        self.lpp_drum_track_colors[i] = clamp(tonumber((lpp_map.drum_palette_by_note or {})[10 + i]) or 0, 0, 127)
+    end
+    self.lpp_clear_button_mapped_color = 9
+    self.lpp_clear_button_unmapped_color = 1
+    self.lpp_drum_page = 1
     self.step_cache = {}
     self.step_cache_meta = {}
     self.step_cache_rev = {}

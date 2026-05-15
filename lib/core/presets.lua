@@ -236,6 +236,16 @@ function M.install(App)
             key_transpose = self.key_transpose,
             scale_degree = self.scale_degree,
             track_cfg = self:export_track_cfg(),
+            lpp_enabled = self.lpp_enabled,
+            lpp_input_port = self.lpp_input_port,
+            lpp_programmer_auto_enter = self.lpp_programmer_auto_enter,
+            lpp_led_feedback = self.lpp_led_feedback,
+            lpp_octave_min = self.lpp_octave_min,
+            lpp_octave_max = self.lpp_octave_max,
+            lpp_zone_octave = deep_copy_table(self.lpp_zone_octave),
+            lpp_zone_track = deep_copy_table(self.lpp_zone_track),
+            lpp_zone_melodic_colors = deep_copy_table(self.lpp_zone_melodic_colors),
+            lpp_drum_page = self.lpp_drum_page,
             sel_track = self.sel_track,
             step = self.step
         }
@@ -266,6 +276,9 @@ function M.install(App)
             "spice",
             "save_slots",
             "beat_repeat_excluded",
+            "lpp_zone_octave",
+            "lpp_zone_track",
+            "lpp_zone_melodic_colors",
         }
         for _, field in ipairs(deep_table_schema) do
             if type(state[field]) == "table" then
@@ -303,8 +316,30 @@ function M.install(App)
         self.transpose_seq_step = clamp(tonumber(state.transpose_seq_step) or self.transpose_seq_step or 1, 1, cfg.NUM_STEPS)
         self.transpose_seq_clock_phase = 0
         self.scale_degree = clamp(tonumber(state.scale_degree) or self.scale_degree or 1, 1, 7)
+        self.lpp_enabled = not not state.lpp_enabled
+        self.lpp_input_port = clamp(tonumber(state.lpp_input_port) or self.lpp_input_port or 0, 0, 16)
+        self.lpp_programmer_auto_enter = not not state.lpp_programmer_auto_enter
+        if state.lpp_led_feedback ~= nil then self.lpp_led_feedback = not not state.lpp_led_feedback end
+        self.lpp_octave_min = clamp(tonumber(state.lpp_octave_min) or self.lpp_octave_min or -4, -8, 0)
+        self.lpp_octave_max = clamp(tonumber(state.lpp_octave_max) or self.lpp_octave_max or 4, 0, 8)
+        self.lpp_drum_page = clamp(tonumber(state.lpp_drum_page) or self.lpp_drum_page or 1, 1, 2)
         self.sel_track = tonumber(state.sel_track)
         self.step = tonumber(state.step) or 1
+
+        if type(self.lpp_zone_octave) ~= "table" then self.lpp_zone_octave = {} end
+        if type(self.lpp_zone_track) ~= "table" then self.lpp_zone_track = {} end
+        if type(self.lpp_zone_melodic_colors) ~= "table" then self.lpp_zone_melodic_colors = {} end
+        for _, zone in ipairs({ "zone_b", "zone_c", "zone_d", "zone_e" }) do
+            self.lpp_zone_octave[zone] = clamp(tonumber((self.lpp_zone_octave or {})[zone]) or 0, self.lpp_octave_min, self.lpp_octave_max)
+            self.lpp_zone_track[zone] = clamp(tonumber((self.lpp_zone_track or {})[zone]) or self.lpp_zone_track[zone] or 1, 1, cfg.NUM_TRACKS)
+            if type(self.lpp_zone_melodic_colors[zone]) ~= "table" then self.lpp_zone_melodic_colors[zone] = {} end
+            self.lpp_zone_melodic_colors[zone].octave = clamp(
+                tonumber((self.lpp_zone_melodic_colors[zone] or {}).octave) or 0,
+                0, 127)
+            self.lpp_zone_melodic_colors[zone].note = clamp(
+                tonumber((self.lpp_zone_melodic_colors[zone] or {}).note) or 0,
+                0, 127)
+        end
 
         for t = 1, cfg.NUM_TRACKS do
             if not self.tracks[t] then

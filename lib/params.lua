@@ -8,6 +8,7 @@ local TRACK_TYPES = { "drum", "mono", "poly" }
 local BEAT_REPEAT_MODES = { "full-row", "one-handed", "step-select" }
 local TRANSPOSE_MODES = { "semitone", "scale degree" }
 local RESET_TIMING_OPTIONS = { "instant", "next beat" }
+local LPP_COLOR_ZONES = { "zone_b", "zone_c", "zone_d", "zone_e" }
 local SCALE_DEGREE_LABELS = {
     diatonic = { "I", "ii", "iii", "IV", "V", "vi", "vii" },
     pentatonic = { "I", "ii", "iii", "V", "vi" },
@@ -33,6 +34,28 @@ local DEFAULT_SETUP_BASE_IDS = {
     "permute_midi_in",
     "permute_midi_in_2",
     "permute_midi_in_auto_ch",
+    "permute_lpp_enable",
+    "permute_lpp_input_port",
+    "permute_lpp_auto_programmer",
+    "permute_lpp_led_feedback",
+    "permute_lpp_zone_b_octave_color",
+    "permute_lpp_zone_b_note_color",
+    "permute_lpp_zone_c_octave_color",
+    "permute_lpp_zone_c_note_color",
+    "permute_lpp_zone_d_octave_color",
+    "permute_lpp_zone_d_note_color",
+    "permute_lpp_zone_e_octave_color",
+    "permute_lpp_zone_e_note_color",
+    "permute_lpp_clear_button_mapped_color",
+    "permute_lpp_clear_button_unmapped_color",
+    "permute_lpp_drum_track_1_color",
+    "permute_lpp_drum_track_2_color",
+    "permute_lpp_drum_track_3_color",
+    "permute_lpp_drum_track_4_color",
+    "permute_lpp_drum_track_5_color",
+    "permute_lpp_drum_track_6_color",
+    "permute_lpp_drum_track_7_color",
+    "permute_lpp_drum_track_8_color",
     "permute_melody_gate_ticks",
     "permute_drum_gate_ticks",
     "permute_spice_accum_min",
@@ -416,6 +439,79 @@ function M.setup(app)
         params:add_option(gid .. "_hold_tie_len", "hold tie length", { "off", "on" }, app.track_hold_tie_len_enabled[track] and 2 or 1)
         params:set_action(gid .. "_hold_tie_len", function(v)
             app.track_hold_tie_len_enabled[track] = (v == 2)
+        end)
+    end
+
+    params:add_group("permute_lpp_integration", "lpp integration", 22)
+
+    params:add_option("permute_lpp_enable", "lpp integration", { "off", "on" }, 1)
+    params:set_action("permute_lpp_enable", function(v)
+        app.lpp_enabled = (v == 2)
+        app:connect_midi_from_params()
+    end)
+
+    params:add_option("permute_lpp_input_port", "lpp midi in port", midi_port_options(true), 1)
+    params:set_action("permute_lpp_input_port", function(v)
+        app.lpp_input_port = clamp((tonumber(v) or 1) - 1, 0, 16)
+        app:connect_midi_from_params()
+    end)
+
+    params:add_option("permute_lpp_auto_programmer", "lpp auto programmer", { "off", "on" }, 1)
+    params:set_action("permute_lpp_auto_programmer", function(v)
+        app.lpp_programmer_auto_enter = (v == 2)
+        app:connect_midi_from_params()
+    end)
+
+    params:add_option("permute_lpp_led_feedback", "lpp led feedback", { "off", "on" }, 2)
+    params:set_action("permute_lpp_led_feedback", function(v)
+        app.lpp_led_feedback = (v == 2)
+        if app.lpp_enabled and app.lpp_refresh_octave_leds then app:lpp_refresh_octave_leds() end
+    end)
+
+    for _, zone in ipairs(LPP_COLOR_ZONES) do
+        local colors = (app.lpp_zone_melodic_colors or {})[zone] or {}
+        local label = zone:gsub("zone_", "")
+        local octave_id = "permute_lpp_" .. zone .. "_octave_color"
+        local note_id = "permute_lpp_" .. zone .. "_note_color"
+        params:add_number(octave_id, "lpp " .. label .. " octave color", 0, 127, clamp(tonumber(colors.octave) or 0, 0, 127))
+        params:set_action(octave_id, function(v)
+            if type(app.lpp_zone_melodic_colors) ~= "table" then app.lpp_zone_melodic_colors = {} end
+            if type(app.lpp_zone_melodic_colors[zone]) ~= "table" then app.lpp_zone_melodic_colors[zone] = {} end
+            app.lpp_zone_melodic_colors[zone].octave = clamp(tonumber(v) or 0, 0, 127)
+            if app.lpp_enabled and app.lpp_refresh_octave_leds then app:lpp_refresh_octave_leds() end
+        end)
+
+        params:add_number(note_id, "lpp " .. label .. " note color", 0, 127, clamp(tonumber(colors.note) or 0, 0, 127))
+        params:set_action(note_id, function(v)
+            if type(app.lpp_zone_melodic_colors) ~= "table" then app.lpp_zone_melodic_colors = {} end
+            if type(app.lpp_zone_melodic_colors[zone]) ~= "table" then app.lpp_zone_melodic_colors[zone] = {} end
+            app.lpp_zone_melodic_colors[zone].note = clamp(tonumber(v) or 0, 0, 127)
+            if app.lpp_enabled and app.lpp_refresh_octave_leds then app:lpp_refresh_octave_leds() end
+        end)
+    end
+
+    params:add_number("permute_lpp_clear_button_mapped_color", "lpp clear mapped color", 0, 127,
+        clamp(tonumber(app.lpp_clear_button_mapped_color) or 9, 0, 127))
+    params:set_action("permute_lpp_clear_button_mapped_color", function(v)
+        app.lpp_clear_button_mapped_color = clamp(tonumber(v) or 9, 0, 127)
+        if app.lpp_enabled and app.lpp_refresh_octave_leds then app:lpp_refresh_octave_leds() end
+    end)
+
+    params:add_number("permute_lpp_clear_button_unmapped_color", "lpp clear unmapped color", 0, 127,
+        clamp(tonumber(app.lpp_clear_button_unmapped_color) or 1, 0, 127))
+    params:set_action("permute_lpp_clear_button_unmapped_color", function(v)
+        app.lpp_clear_button_unmapped_color = clamp(tonumber(v) or 1, 0, 127)
+        if app.lpp_enabled and app.lpp_refresh_octave_leds then app:lpp_refresh_octave_leds() end
+    end)
+
+    for i = 1, 8 do
+        local id = "permute_lpp_drum_track_" .. tostring(i) .. "_color"
+        params:add_number(id, "lpp drum " .. tostring(i) .. " color", 0, 127,
+            clamp(tonumber((app.lpp_drum_track_colors or {})[i]) or 0, 0, 127))
+        params:set_action(id, function(v)
+            if type(app.lpp_drum_track_colors) ~= "table" then app.lpp_drum_track_colors = {} end
+            app.lpp_drum_track_colors[i] = clamp(tonumber(v) or 0, 0, 127)
+            if app.lpp_enabled and app.lpp_refresh_octave_leds then app:lpp_refresh_octave_leds() end
         end)
     end
 
