@@ -157,6 +157,8 @@ function M.install(App)
     function App:is_modifier_dynamic_row_active()
         if self.mod_held[cfg.MOD.OCTAVE] and self.sel_track then return true end
         if self.mod_held[cfg.MOD.TRANSPOSE] then return true end
+        if self.mod_held[cfg.MOD.START] and not self.mod_held[cfg.MOD.END_STEP] and not self.speed_mode then return true end
+        if self.mod_held[cfg.MOD.END_STEP] and not self.mod_held[cfg.MOD.START] and not self.speed_mode then return true end
         if self.mod_held[cfg.MOD.RAND_NOTES] or self.mod_held[cfg.MOD.RAND_STEPS] then return true end
         if self.mod_held[cfg.MOD.BEAT_RPT] then return true end
         if self.mod_held[cfg.MOD.SPICE] then return true end
@@ -254,8 +256,9 @@ function M.install(App)
     function App:apply_held_gate_span(track, anchor_step, target_step, preserve_step)
         local t = clamp(tonumber(track) or 1, 1, cfg.NUM_TRACKS)
         if not self.track_hold_tie_len_enabled[t] then return end
-        local from_step = clamp(tonumber(anchor_step) or 1, 1, cfg.NUM_STEPS)
-        local to_step = clamp(tonumber(target_step) or 1, 1, cfg.NUM_STEPS)
+        local step_limit = self:get_track_step_limit()
+        local from_step = clamp(tonumber(anchor_step) or 1, 1, step_limit)
+        local to_step = clamp(tonumber(target_step) or 1, 1, step_limit)
         if from_step == to_step then return end
 
         local tr = self:ensure_track_state(t)
@@ -410,7 +413,8 @@ function M.install(App)
     end
 
     function App:clear_track(t)
-        for s = 1, cfg.NUM_STEPS do
+        local step_limit = self:get_track_step_limit()
+        for s = 1, step_limit do
             self.tracks[t].gates[s] = false
             if self.track_cfg[t].type == "poly" then self.tracks[t].pitches[s] = { 1 } else self.tracks[t].pitches[s] = 1 end
             self.tracks[t].vels[s] = self:get_track_default_vel_level(t)
@@ -440,7 +444,7 @@ function M.install(App)
         elseif mod == cfg.MOD.START then
             self.tracks[t].start_step = 1
         elseif mod == cfg.MOD.END_STEP then
-            self.tracks[t].end_step = 16
+            self.tracks[t].end_step = cfg.NUM_STEPS
         elseif mod == cfg.MOD.OCTAVE then
             self.tracks[t].octave = 0
         elseif mod == cfg.MOD.TRANSPOSE then
@@ -486,6 +490,7 @@ function M.install(App)
 
         local tr = self:ensure_track_state(t)
         local tc = self.track_cfg[t]
+        x = self:get_track_visible_step(t, x)
         local prev_held = self.held
 
         if z == 0 then
@@ -697,6 +702,7 @@ function M.install(App)
             if y >= 1 and y <= takeover_rows then
                 local t = self.sel_track or 1
                 self.sel_track = t
+                x = self:get_track_visible_step(t, x)
                 local tr = self.tracks[t]
                 local tc = self.track_cfg[t]
                 local prev_held = self.held
@@ -889,6 +895,7 @@ function M.install(App)
 
         local t = self:row_to_track(y)
         if t and t >= 1 and t <= cfg.NUM_TRACKS then
+            x = self:get_track_visible_step(t, x)
             local prev_held = self.held
             local prev_sel_track = self.sel_track
             if z == 1 then

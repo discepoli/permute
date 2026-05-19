@@ -261,7 +261,10 @@ function M.install(App)
             row("tempo: " .. string.format("%d", self.tempo_bpm), 10)
             row("scale: " .. tostring(self.scale_type), 10)
             local sel = self.sel_track and tostring(self.sel_track) or "-"
+            local page = self.sel_track and tostring(self:get_track_view_page(self.sel_track)) or "-"
+            local follow = self.follow_page_on_playhead and "on" or "off"
             row("track: " .. sel, 10)
+            row("page: " .. page .. " (follow " .. follow .. ")", 10)
             row("clock: " .. (self.use_midi_clock and "midi" or "internal"), 10)
         end
     end
@@ -397,7 +400,9 @@ function M.install(App)
 
                 screen.move(0, y4)
                 local sel = self.sel_track and tostring(self.sel_track) or "-"
-                screen.text("track: " .. sel)
+                local page = self.sel_track and tostring(self:get_track_view_page(self.sel_track)) or "-"
+                local follow = self.follow_page_on_playhead and "on" or "off"
+                screen.text("track: " .. sel .. "  page: " .. page .. " (" .. follow .. ")")
 
                 screen.move(0, y5)
                 screen.text("clock: " .. (self.use_midi_clock and "midi" or "internal"))

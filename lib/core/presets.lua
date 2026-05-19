@@ -202,6 +202,7 @@ function M.install(App)
             track_clock_div = deep_copy_table(self.track_clock_div),
             track_clock_mult = deep_copy_table(self.track_clock_mult),
             track_transpose = deep_copy_table(self.track_transpose),
+            track_view_page = deep_copy_table(self.track_view_page),
             track_rand_gate_prob = deep_copy_table(self.track_rand_gate_prob),
             track_rand_pitch_prob = deep_copy_table(self.track_rand_pitch_prob),
             track_rand_pitch_span = deep_copy_table(self.track_rand_pitch_span),
@@ -226,6 +227,7 @@ function M.install(App)
             beat_repeat_excluded = deep_copy_table(self.beat_repeat_excluded),
             master_seq_len_enabled = self.master_seq_len_enabled,
             master_seq_len = self.master_seq_len,
+            follow_page_on_playhead = self.follow_page_on_playhead,
             send_midi_clock_out = self.send_midi_clock_out,
             send_midi_start_stop_out = self.send_midi_start_stop_out,
             spice_accum_min = self.spice_accum_min,
@@ -253,6 +255,7 @@ function M.install(App)
 
     function App:import_state(state)
         if type(state) ~= "table" then return end
+        local track_step_limit = self:get_track_step_limit()
 
         if type(state.track_cfg) == "table" then
             self:import_track_cfg(state.track_cfg, false)
@@ -264,6 +267,7 @@ function M.install(App)
             "track_clock_div",
             "track_clock_mult",
             "track_transpose",
+            "track_view_page",
             "track_rand_gate_prob",
             "track_rand_pitch_prob",
             "track_rand_pitch_span",
@@ -295,6 +299,9 @@ function M.install(App)
         end
         self.master_seq_len_enabled = not not state.master_seq_len_enabled
         self.master_seq_len = clamp(tonumber(state.master_seq_len) or cfg.DEFAULT_MASTER_SEQ_LEN, 1, cfg.MAX_MASTER_SEQ_LEN)
+        if state.follow_page_on_playhead ~= nil then
+            self.follow_page_on_playhead = not not state.follow_page_on_playhead
+        end
         if state.send_midi_clock_out ~= nil then self.send_midi_clock_out = not not state.send_midi_clock_out end
         if state.send_midi_start_stop_out ~= nil then self.send_midi_start_stop_out = not not state.send_midi_start_stop_out end
         self:set_spice_accum_bounds(state.spice_accum_min, state.spice_accum_max)
@@ -350,13 +357,15 @@ function M.install(App)
                     muted = false,
                     solo = false,
                     start_step = 1,
-                    end_step = cfg.NUM_STEPS,
+                    end_step = math.min(cfg.NUM_STEPS, track_step_limit),
                     octave = 0
                 }
             end
             if not self.track_steps[t] then self.track_steps[t] = 1 end
             if not self.track_clock_div[t] then self.track_clock_div[t] = 1 end
             if not self.track_clock_mult[t] then self.track_clock_mult[t] = 1 end
+            if type(self.track_view_page) ~= "table" then self.track_view_page = {} end
+            self.track_view_page[t] = self:set_track_view_page(t, self.track_view_page[t] or 1)
             if not self.track_clock_phase[t] then self.track_clock_phase[t] = 0 end
             if not self.track_transpose[t] then self.track_transpose[t] = 0 end
             self.track_rand_gate_prob[t] = clamp(tonumber(self.track_rand_gate_prob[t]) or 0, 0, 1)
@@ -423,6 +432,7 @@ function M.install(App)
 
     function App:save_to_slot(slot)
         if slot < 1 or slot > 8 then return end
+        local track_step_limit = self:get_track_step_limit()
         local snap = { g = {}, p = {}, v = {}, r = {}, sp = {}, m = {}, key_transpose = self.key_transpose, tt = {} }
         for t = 1, cfg.NUM_TRACKS do
             local tr = self:ensure_track_state(t)
@@ -434,14 +444,14 @@ function M.install(App)
             snap.sp[t] = {}
             snap.tt[t] = clamp(tonumber(self.track_transpose[t]) or 0, -96, 96)
             snap.m[t] = {
-                start_step = clamp(tonumber(tr.start_step) or 1, 1, cfg.NUM_STEPS),
-                end_step = clamp(tonumber(tr.end_step) or cfg.NUM_STEPS, 1, cfg.NUM_STEPS),
+                start_step = self:clamp_track_step(tr.start_step, 1),
+                end_step = self:clamp_track_step(tr.end_step, math.min(cfg.NUM_STEPS, track_step_limit)),
                 octave = clamp(tonumber(tr.octave) or 0, -7, 8),
                 clock_mult = clamp(tonumber(self.track_clock_mult[t]) or 1, 1, 8),
                 clock_div = clamp(tonumber(self.track_clock_div[t]) or 1, 1, 64),
                 arc = deep_copy_table(tr.arc or { pulses = 0, rotation = 1, variance = 0, mode = 1 })
             }
-            for s = 1, cfg.NUM_STEPS do
+            for s = 1, track_step_limit do
                 if tr.gates[s] then
                     snap.g[t][s] = 1
                     snap.v[t][s] = clamp(tonumber(tr.vels[s]) or cfg.DEFAULT_VEL_LEVEL, 1, 15)
@@ -468,12 +478,13 @@ function M.install(App)
         if slot < 1 or slot > 8 then return end
         local snap = self.save_slots[slot]
         if not snap then return end
+        local track_step_limit = self:get_track_step_limit()
         for t = 1, cfg.NUM_TRACKS do
             local tr = self:ensure_track_state(t)
             local tc = self.track_cfg[t]
             self.ratios[t] = {}
             self.spice[t] = {}
-            for s = 1, cfg.NUM_STEPS do
+            for s = 1, track_step_limit do
                 tr.gates[s] = false
                 tr.vels[s] = self:get_track_default_vel_level(t)
                 if tc.type == "poly" then tr.pitches[s] = { 1 } else tr.pitches[s] = 1 end
@@ -484,14 +495,14 @@ function M.install(App)
             local sr = snap.r[t] or {}
             local ssp = snap.sp[t] or {}
             local sm = snap.m[t] or {}
-            tr.start_step = clamp(tonumber(sm.start_step) or tr.start_step or 1, 1, cfg.NUM_STEPS)
-            tr.end_step = clamp(tonumber(sm.end_step) or tr.end_step or cfg.NUM_STEPS, 1, cfg.NUM_STEPS)
+            tr.start_step = self:clamp_track_step(sm.start_step, tr.start_step or 1)
+            tr.end_step = self:clamp_track_step(sm.end_step, tr.end_step or math.min(cfg.NUM_STEPS, track_step_limit))
             tr.octave = clamp(tonumber(sm.octave) or tr.octave or 0, -7, 8)
             tr.arc = deep_copy_table(sm.arc or tr.arc or { pulses = 0, rotation = 1, variance = 0, mode = 1 })
             self.track_clock_mult[t] = clamp(tonumber(sm.clock_mult) or self.track_clock_mult[t] or 1, 1, 8)
             self.track_clock_div[t] = clamp(tonumber(sm.clock_div) or self.track_clock_div[t] or 1, 1, 64)
             self.track_transpose[t] = clamp(tonumber((snap.tt or {})[t]) or self.track_transpose[t] or 0, -96, 96)
-            for s = 1, cfg.NUM_STEPS do
+            for s = 1, track_step_limit do
                 if sg[s] then
                     tr.gates[s] = true
                     tr.vels[s] = clamp(tonumber(sv[s]) or cfg.DEFAULT_VEL_LEVEL, 1, 15)

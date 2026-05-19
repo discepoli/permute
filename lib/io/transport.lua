@@ -131,7 +131,7 @@ function M.install(App)
             local tr = self:ensure_track_state(t)
             local tc = self.track_cfg[t]
             local step_cache = self:build_arc_step_cache(t, tr, tc)
-            local len = math.abs((tonumber(tr.end_step) or cfg.NUM_STEPS) - (tonumber(tr.start_step) or 1)) + 1
+            local len = math.abs((tonumber(tr.end_step) or self:get_track_step_limit()) - (tonumber(tr.start_step) or 1)) + 1
             local mult = self.track_clock_mult[t]
             local div = self.track_clock_div[t]
             local ratio = (mult / div) * scale
@@ -147,6 +147,17 @@ function M.install(App)
 
             for _ = 1, hits do
                 local st = self:get_track_step(t)
+                if self.follow_page_on_playhead
+                    and t == self.sel_track
+                    and not self.mod_held[cfg.MOD.START]
+                    and not self.mod_held[cfg.MOD.END_STEP] then
+                    local playhead_page = self:track_step_to_page(st)
+                    if playhead_page ~= self:get_track_view_page(t) then
+                        self:set_track_view_page(t, playhead_page)
+                        self:request_redraw()
+                        self:request_aux_redraw()
+                    end
+                end
                 local gate_ticks = clamp(
                     tonumber(self.track_gate_ticks[t]) or
                     ((tc.type == "drum") and self.drum_gate_clocks or self.melody_gate_clocks), 1, 24)

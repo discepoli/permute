@@ -85,9 +85,11 @@ function App.new()
     self.spice_accum_max = cfg.SPICE_MAX
     self.track_transpose = {}
     self.track_edit_octave_page = {}
+    self.track_view_page = {}
     self.track_rand_gate_prob = {}
     self.track_rand_pitch_prob = {}
     self.track_rand_pitch_span = {}
+    self.follow_page_on_playhead = false
     self.transpose_mode = "semitone"
     self.transpose_takeover_mode = false
     self.transpose_seq_enabled = false
@@ -200,6 +202,7 @@ function App.new()
     self.clock_debug_overrun_samples = {}
     self.clock_debug_hist = { [1] = 0, [2] = 0, [3] = 0, [4] = 0, [5] = 0 }
 
+    local track_step_limit = math.max(tonumber(cfg.MAX_STEPS) or cfg.NUM_STEPS, cfg.NUM_STEPS)
     for t = 1, cfg.NUM_TRACKS do
         self.tracks[t] = {
             gates = {},
@@ -218,7 +221,7 @@ function App.new()
                 mode = 1
             }
         }
-        for s = 1, cfg.NUM_STEPS do
+        for s = 1, track_step_limit do
             self.tracks[t].gates[s] = false
             self.tracks[t].ties[s] = false
             self.tracks[t].vels[s] = cfg.DEFAULT_VEL_LEVEL
@@ -239,6 +242,7 @@ function App.new()
         self.spice[t] = {}
         self.track_transpose[t] = 0
         self.track_edit_octave_page[t] = 0
+        self.track_view_page[t] = 1
         self.track_rand_gate_prob[t] = 0
         self.track_rand_pitch_prob[t] = 0
         self.track_rand_pitch_span[t] = 0

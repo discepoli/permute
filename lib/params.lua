@@ -22,6 +22,7 @@ local DEFAULT_SETUP_BASE_IDS = {
     "permute_tempo",
     "permute_master_len_enabled",
     "permute_master_len",
+    "permute_follow_page",
     "permute_reset_timing",
     "permute_ext_clock",
     "permute_send_clock_out",
@@ -102,7 +103,7 @@ function M.setup(app)
     local prev_action_read = params.action_read
     local prev_action_delete = params.action_delete
 
-    params:add_group("permute_seq", "permute", 41)
+    params:add_group("permute_seq", "permute", 42)
 
     params:add_option("permute_scale", "scale", SCALE_NAMES, 2)
     params:set_action("permute_scale", function(v)
@@ -159,6 +160,13 @@ function M.setup(app)
     params:set_action("permute_master_len", function(v)
         app.master_seq_len = clamp(tonumber(v) or cfg.DEFAULT_MASTER_SEQ_LEN, 1, cfg.MAX_MASTER_SEQ_LEN)
         app.master_seq_counter = 0
+    end)
+
+    params:add_option("permute_follow_page", "follow page on playhead", { "off", "on" }, 1)
+    params:set_action("permute_follow_page", function(v)
+        app.follow_page_on_playhead = (v == 2)
+        app:request_redraw()
+        app:request_aux_redraw()
     end)
 
     params:add_option("permute_reset_timing", "reset timing", RESET_TIMING_OPTIONS, 1)

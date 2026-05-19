@@ -42,7 +42,7 @@ function M.install(App)
         local tr = self:ensure_track_state(track)
         if not tr then return nil end
         if type(tr.arc) ~= "table" then tr.arc = {} end
-        tr.arc.pulses = clamp(tonumber(tr.arc.pulses) or 0, 0, cfg.NUM_STEPS)
+        tr.arc.pulses = clamp(tonumber(tr.arc.pulses) or 0, 0, self:get_track_step_limit())
         tr.arc.rotation = math.floor(tonumber(tr.arc.rotation) or 1)
         tr.arc.variance = clamp(tonumber(tr.arc.variance) or 0, 0, 100)
         tr.arc.mode = self:normalize_arc_mode(tr.arc.mode)
@@ -57,7 +57,8 @@ function M.install(App)
     end
 
     function App:is_beat_column(step)
-        return step == 1 or step == 5 or step == 9 or step == 13
+        local s = self:clamp_track_step(step, 1)
+        return ((s - 1) % 4) == 0
     end
 
     function App:get_arc_pattern(track)
@@ -185,7 +186,8 @@ function M.install(App)
         local order, active, positions, phase_positions = self:get_arc_pattern(track)
         local cache = {}
 
-        for s = 1, cfg.NUM_STEPS do
+        local step_limit = self:get_track_step_limit()
+        for s = 1, step_limit do
             if tr.gates[s] then
                 cache[s] = {
                     source = "manual",

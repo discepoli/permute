@@ -213,9 +213,11 @@ function M.install(App)
         local current_step = self:get_track_step(t)
         local lo, hi = self:get_track_bounds(tr)
         local scale = cfg.SCALES[self.scale_type] or cfg.SCALES.chromatic
+        local view_page = self:get_track_view_page(t)
 
         if tc.type == "drum" then
-            for s = 1, cfg.NUM_STEPS do
+            for col = 1, cfg.NUM_STEPS do
+                local s = self:get_track_visible_step(t, col, view_page)
                 local in_range = s >= lo and s <= hi
                 local is_playhead = (s == current_step and self.playing)
                 local fill = fills[s]
@@ -225,7 +227,7 @@ function M.install(App)
 
                 if in_range and self:is_beat_column(s) then
                     for row = 1, cfg.AUX_GRID_ROWS do
-                        self:aux_buf_led(next_buf, s, row, 2)
+                        self:aux_buf_led(next_buf, col, row, 2)
                     end
                 end
 
@@ -240,14 +242,15 @@ function M.install(App)
                 if top_row then
                     if not in_range then lv = math.max(1, math.floor(lv / 2)) end
                     for row = top_row, cfg.AUX_GRID_ROWS do
-                        self:aux_buf_led(next_buf, s, row, lv)
+                        self:aux_buf_led(next_buf, col, row, lv)
                     end
                 elseif in_range or is_playhead then
-                    self:aux_buf_led(next_buf, s, cfg.AUX_GRID_ROWS, is_playhead and 2 or 1)
+                    self:aux_buf_led(next_buf, col, cfg.AUX_GRID_ROWS, is_playhead and 2 or 1)
                 end
             end
         else
-            for s = 1, cfg.NUM_STEPS do
+            for col = 1, cfg.NUM_STEPS do
+                local s = self:get_track_visible_step(t, col, view_page)
                 local in_range = s >= lo and s <= hi
                 local is_playhead = (s == current_step and self.playing)
                 local fill = fills[s]
@@ -257,7 +260,7 @@ function M.install(App)
 
                 if (not self.realtime_play_mode) and in_range and self:is_beat_column(s) then
                     for row = 1, cfg.AUX_GRID_ROWS do
-                        self:aux_buf_led(next_buf, s, row, 2)
+                        self:aux_buf_led(next_buf, col, row, 2)
                     end
                 end
 
@@ -294,15 +297,15 @@ function M.install(App)
                             and (manual and ((is_playhead and 7) or 5) or ((is_playhead and 5) or 4))
                             or (manual and ((is_playhead and 15) or 12) or ((is_playhead and 10) or 7))
                         if not in_range then lv = math.max(1, math.floor(lv / 2)) end
-                        self:aux_buf_led(next_buf, s, row, lv)
+                        self:aux_buf_led(next_buf, col, row, lv)
                     elseif is_fill then
                         local lv = is_out_of_view and ((is_playhead and 6) or 4) or ((is_playhead and 10) or 6)
                         if not in_range then lv = math.max(1, math.floor(lv / 2)) end
-                        self:aux_buf_led(next_buf, s, row, lv)
+                        self:aux_buf_led(next_buf, col, row, lv)
                     elseif is_root and in_range then
-                        self:aux_buf_led(next_buf, s, row, 2)
+                        self:aux_buf_led(next_buf, col, row, 2)
                     elseif is_playhead and in_range then
-                        self:aux_buf_led(next_buf, s, row, 1)
+                        self:aux_buf_led(next_buf, col, row, 1)
                     end
                 end
             end
