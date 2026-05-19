@@ -218,10 +218,10 @@ function M.install(App)
                     local chord = {}
                     if type(base_pitch) == "table" then
                         for i, degree in ipairs(base_pitch) do
-                            chord[i] = clamp((tonumber(degree) or 1) + shift, 1, 16)
+                            chord[i] = clamp((tonumber(degree) or 1) + shift, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
                         end
                     else
-                        chord[1] = clamp((tonumber(base_pitch) or 1) + shift, 1, 16)
+                        chord[1] = clamp((tonumber(base_pitch) or 1) + shift, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
                     end
                     if #chord == 0 then chord[1] = 1 end
                     cache[step] = {
@@ -234,7 +234,7 @@ function M.install(App)
                     cache[step] = {
                         source = "arc",
                         vel = ref_step and tr.vels[ref_step] or default_vel,
-                        pitch = clamp((tonumber(base_degree) or 1) + shift, 1, 16)
+                        pitch = clamp((tonumber(base_degree) or 1) + shift, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
                     }
                 end
             end

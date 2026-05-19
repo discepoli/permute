@@ -60,13 +60,13 @@ function M.install(App)
                     tr.vels[s] = clamp((tonumber(tr.vels[s]) or self:get_track_default_vel_level(t)) + delta, 1, 15)
                 elseif tc.type == "poly" then
                     local pv = tr.pitches[s]
-                    if type(pv) ~= "table" then pv = { clamp(tonumber(pv) or 1, 1, 16) } end
+                    if type(pv) ~= "table" then pv = { clamp(tonumber(pv) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE) } end
                     for i = 1, #pv do
-                        pv[i] = clamp((tonumber(pv[i]) or 1) + delta, 1, 16)
+                        pv[i] = clamp((tonumber(pv[i]) or 1) + delta, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
                     end
                     tr.pitches[s] = pv
                 else
-                    tr.pitches[s] = clamp((tonumber(tr.pitches[s]) or 1) + delta, 1, 16)
+                    tr.pitches[s] = clamp((tonumber(tr.pitches[s]) or 1) + delta, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
                 end
             end
         end
@@ -88,10 +88,10 @@ function M.install(App)
                     for i, _ in ipairs(tr.pitches[s]) do
                         local p_shift = math.random(0, amount)
                         if math.random(1, 2) == 1 then p_shift = -p_shift end
-                        tr.pitches[s][i] = clamp(center_degree + p_shift, 1, 16)
+                        tr.pitches[s][i] = clamp(center_degree + p_shift, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
                     end
                 else
-                    tr.pitches[s] = clamp(center_degree + shift, 1, 16)
+                    tr.pitches[s] = clamp(center_degree + shift, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
                 end
             end
         end

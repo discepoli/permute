@@ -425,18 +425,7 @@ function M.install(App)
     end
 
     function App:midi_note_to_track_degree(track, midi_note)
-        local target_note = clamp(tonumber(midi_note) or 0, 0, 127)
-        local best_degree = 1
-        local best_distance = 128
-        for degree = cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE do
-            local candidate = self:get_pitch(track, degree, 0)
-            local distance = math.abs(candidate - target_note)
-            if distance < best_distance then
-                best_distance = distance
-                best_degree = degree
-            end
-        end
-        return best_degree
+        return self:note_to_nearest_degree(track, midi_note, nil, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
     end
 
     function App:get_midi_in_target_track(ch, note)

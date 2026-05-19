@@ -27,11 +27,7 @@ function M.install(App)
 
     function App:get_aux_degree_visibility(track, stored_degree)
         local sd = clamp(tonumber(stored_degree) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
-        local min_degree = self:get_track_visible_degree(track, 1)
-        local max_degree = self:get_track_visible_degree(track, cfg.AUX_GRID_ROWS)
-        if min_degree > max_degree then
-            min_degree, max_degree = max_degree, min_degree
-        end
+        local min_degree, max_degree = self:get_visible_degree_window(track, "aux")
         if sd < min_degree then return -1 end
         if sd > max_degree then return 1 end
         return 0

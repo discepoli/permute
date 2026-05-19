@@ -683,11 +683,7 @@ function M.install(App)
             end
         else
             local scale = cfg.SCALES[self.scale_type] or cfg.SCALES.chromatic
-            local visible_degree_min = self:main_takeover_row_to_degree(takeover_rows, self.sel_track)
-            local visible_degree_max = self:main_takeover_row_to_degree(1, self.sel_track)
-            if visible_degree_min > visible_degree_max then
-                visible_degree_min, visible_degree_max = visible_degree_max, visible_degree_min
-            end
+            local visible_degree_min, visible_degree_max = self:get_visible_degree_window(self.sel_track, "takeover")
             for s = 1, cfg.NUM_STEPS do
                 local is_playhead = (s == current_step and self.playing)
                 local in_range = s >= lo and s <= hi
@@ -709,7 +705,7 @@ function M.install(App)
                             is_on = self:poly_has_pitch(step_data.pitch, degree)
                         else
                             is_on = clamp(
-                                tonumber(step_data.pitch) or 1, 1, takeover_rows) == degree
+                                tonumber(step_data.pitch) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE) == degree
                         end
                     elseif fill_degree then
                         is_fill = degree == fill_degree

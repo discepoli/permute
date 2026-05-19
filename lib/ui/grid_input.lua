@@ -772,7 +772,7 @@ function M.install(App)
                     elseif self:mod_active(cfg.MOD.TEMP) and self:is_temp_button_fill_mode() then
                         ensure_push()
                         local fill_vel = clamp(16 - y, 1, 15)
-                        local fill_pitch = clamp(16 - y, 1, 16)
+                        local fill_pitch = self:main_takeover_row_to_degree(y, t)
                         if self.fill_patterns[t][x] then
                             self.fill_patterns[t][x] = nil
                             applied_value = "off"
