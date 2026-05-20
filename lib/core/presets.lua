@@ -385,6 +385,9 @@ function M.install(App)
             if not self.ratios[t] then self.ratios[t] = {} end
             if not self.spice[t] then self.spice[t] = {} end
             if not self.track_loop_count[t] then self.track_loop_count[t] = 1 end
+            if type(self.track_state_validated_step_limit) == "table" then
+                self.track_state_validated_step_limit[t] = nil
+            end
             self:ensure_track_state(t)
         end
 

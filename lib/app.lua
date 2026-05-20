@@ -47,6 +47,7 @@ function App.new()
     self.track_clock_mult = {}
     self.track_clock_phase = {}
     self.track_loop_count = {}
+    self.track_state_validated_step_limit = {}
 
     self.mod_held = {}
     self.key_held = {}
@@ -111,6 +112,9 @@ function App.new()
     self.redo_stack = {}
     self.history_limit = 5
     self.suspend_history = false
+    self.undo_coalesce_ms = 140
+    self.undo_last_tag = nil
+    self.undo_last_ms = nil
 
     self.master_seq_len_enabled = false
     self.master_seq_len = cfg.DEFAULT_MASTER_SEQ_LEN
@@ -164,6 +168,7 @@ function App.new()
     self.midi_in_auto_channel = 16
     self.midi_in_active_notes = {}
     self.midi_in_record_holds = {}
+    self.midi_record_skip_once = {}
     self.lpp_enabled = false
     self.lpp_input_port = 0
     self.lpp_programmer_auto_enter = false
@@ -173,6 +178,7 @@ function App.new()
     self.lpp_zone_octave = { zone_b = 0, zone_c = 0, zone_d = 0, zone_e = 0 }
     self.lpp_zone_track = { zone_b = 11, zone_c = 12, zone_d = 13, zone_e = 14 }
     self.lpp_zone_melodic_colors = deep_copy_table(lpp_map.zone_melodic_colors or {})
+    self.lpp_length_modifier_held = false
     self.lpp_drum_track_colors = {}
     for i = 1, 8 do
         self.lpp_drum_track_colors[i] = clamp(tonumber((lpp_map.drum_palette_by_note or {})[10 + i]) or 0, 0, 127)

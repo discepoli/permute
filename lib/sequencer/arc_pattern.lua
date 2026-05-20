@@ -205,7 +205,10 @@ function M.install(App)
                 local variance_amount = clamp(tonumber(arc_state.variance) or 0, 0, 100)
                 local variance_depth = math.floor((variance_amount / 100) * 7 + 0.5)
                 local wave = self:get_arc_wave_value(track, pos, len, arc_state.mode)
-                local shift = math.floor((wave * variance_depth) + ((wave >= 0) and 0.5 or -0.5))
+                local shift_raw = wave * variance_depth
+                local shift = (shift_raw >= 0)
+                    and math.floor(shift_raw + 0.5)
+                    or math.ceil(shift_raw - 0.5)
                 local ref_step = self:get_arc_reference_step(track, order, step, tr)
                 local default_vel = self:get_track_default_vel_level(track)
 

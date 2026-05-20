@@ -82,8 +82,7 @@ function M.install(App)
 
             if x == cfg.MOD.TRANSPOSE and self.mod_held[cfg.MOD.SHIFT] then
                 self.mod_shortcut_consumed[x] = true
-                self.external_midi_record_mode = not self.external_midi_record_mode
-                self:flash_mod_applied(cfg.MOD.TRANSPOSE, self.external_midi_record_mode and "midi rec on" or "midi rec off")
+                self:toggle_external_midi_record_mode()
                 self:request_redraw()
                 self:request_aux_redraw()
                 return
@@ -840,6 +839,9 @@ function M.install(App)
                 local track_playhead = self:get_track_step(t)
                 local lo, hi = self:get_track_bounds(tr)
                 local view_page = self:get_track_view_page(t)
+                if (self.mod_held[cfg.MOD.START] or self.mod_held[cfg.MOD.END_STEP]) and not self.speed_mode then
+                    view_page = self:get_track_view_page(self.sel_track or t)
+                end
 
                 for col = 1, cfg.NUM_STEPS do
                     local s = self:get_track_visible_step(t, col, view_page)

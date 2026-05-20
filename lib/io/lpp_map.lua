@@ -41,9 +41,16 @@ M.lpp_outer_controls = {
 
     zone_b_oct_down = { type = "cc", id = 20 },
     zone_b_oct_up = { type = "cc", id = 29 },
+    zone_b_clear_track = { type = "cc", id = 97 },
+    zone_b_double_length = { type = "cc", id = 98 },
 
-    zone_a_page_1 = { type = "cc", id = 10 },
-    zone_a_page_2 = { type = "cc", id = 19 },
+    zone_a_midi_record = { type = "cc", id = 10 },
+    zone_a_page_toggle = { type = "cc", id = 19 },
+    zone_length_modifier = { type = "cc", id = 90 },
+
+    zone_c_double_length = { type = "cc", id = 49 },
+    zone_d_double_length = { type = "cc", id = 69 },
+    zone_e_double_length = { type = "cc", id = 89 },
 
     clear_drum_track_1 = { type = "cc", id = 101 },
     clear_drum_track_2 = { type = "cc", id = 102 },
@@ -53,6 +60,15 @@ M.lpp_outer_controls = {
     clear_drum_track_6 = { type = "cc", id = 106 },
     clear_drum_track_7 = { type = "cc", id = 107 },
     clear_drum_track_8 = { type = "cc", id = 108 },
+
+    duplicate_drum_track_1 = { type = "cc", id = 1 },
+    duplicate_drum_track_2 = { type = "cc", id = 2 },
+    duplicate_drum_track_3 = { type = "cc", id = 3 },
+    duplicate_drum_track_4 = { type = "cc", id = 4 },
+    duplicate_drum_track_5 = { type = "cc", id = 5 },
+    duplicate_drum_track_6 = { type = "cc", id = 6 },
+    duplicate_drum_track_7 = { type = "cc", id = 7 },
+    duplicate_drum_track_8 = { type = "cc", id = 8 },
 }
 
 M.lpp_outer_control_by_message = {}

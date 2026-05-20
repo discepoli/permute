@@ -148,12 +148,14 @@ function M.install(App)
             for _ = 1, hits do
                 local st = self:get_track_step(t)
                 if self.follow_page_on_playhead
-                    and t == self.sel_track
                     and not self.mod_held[cfg.MOD.START]
                     and not self.mod_held[cfg.MOD.END_STEP] then
-                    local playhead_page = self:track_step_to_page(st)
-                    if playhead_page ~= self:get_track_view_page(t) then
-                        self:set_track_view_page(t, playhead_page)
+                    local desired_page = 1
+                    if len > cfg.NUM_STEPS then
+                        desired_page = self:track_step_to_page(st)
+                    end
+                    if desired_page ~= self:get_track_view_page(t) then
+                        self:set_track_view_page(t, desired_page)
                         self:request_redraw()
                         self:request_aux_redraw()
                     end
@@ -166,12 +168,14 @@ function M.install(App)
                 local ratio_allows = step_data and self:step_ratio_allows_play(t, st)
                 local is_tie_step = step_data and step_data.source == "manual" and step_data.tie and ratio_allows
                 local should_play = ((step_data and ratio_allows and (not is_tie_step or not self.last_notes[t])) or has_fill)
+                local mute_recorded_once = (not has_fill) and step_data and step_data.source == "manual" and
+                    self:consume_recorded_step_skip_once(t, st)
 
                 if self.last_notes[t] and not is_tie_step then
                     self:note_off_last_for_track(t)
                 end
 
-                if not tr.muted and should_play then
+                if not tr.muted and should_play and not mute_recorded_once then
                     local output_ports = self.midi_out_ports_snapshot
                     local note_len_ticks = gate_ticks
                     if step_data and step_data.source == "manual" and not step_data.tie and not has_fill then
@@ -348,6 +352,7 @@ function M.install(App)
         self.active_note_offs = {}
         self.midi_in_active_notes = {}
         self.midi_in_record_holds = {}
+        self.midi_record_skip_once = {}
     end
 
     function App:start()

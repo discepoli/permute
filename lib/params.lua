@@ -98,12 +98,41 @@ local function scale_degree_label(scale_type, idx)
     return labels[clamp(idx, 1, #labels)] or labels[1]
 end
 
+local function add_permute_spacer(id)
+    if params and params.add_separator and params.add_number then
+        params:add_number(id, "", 0, 0, 0, function()
+            return ""
+        end)
+        if params.set_save then
+            params:set_save(id, false)
+        end
+        if params.lookup_param then
+            local p = params:lookup_param(id)
+            if p then p.allow_pmap = false end
+        end
+    end
+end
+
+local function add_permute_section(id, label, add_spacer_before)
+    if params and params.add_separator then
+        if add_spacer_before then
+            add_permute_spacer(id .. "_spacer")
+        end
+        params:add_separator(id, label)
+    end
+end
+
 function M.setup(app)
     local prev_action_write = params.action_write
     local prev_action_read = params.action_read
     local prev_action_delete = params.action_delete
 
-    params:add_group("permute_seq", "permute", 42)
+    local section_count = 8
+    local spacer_count = section_count - 1
+    local permute_section_count = (params and params.add_separator) and (section_count + spacer_count) or 0
+    params:add_group("permute_seq", "permute", 42 + permute_section_count)
+
+    add_permute_section("permute_section_music", "music")
 
     params:add_option("permute_scale", "scale", SCALE_NAMES, 2)
     params:set_action("permute_scale", function(v)
@@ -143,6 +172,8 @@ function M.setup(app)
         end
     end)
 
+    add_permute_section("permute_section_transport", "transport", true)
+
     params:add_number("permute_tempo", "tempo", 30, 300, cfg.DEFAULT_TEMPO_BPM)
     params:set_action("permute_tempo", function(v)
         app.tempo_bpm = v
@@ -162,13 +193,6 @@ function M.setup(app)
         app.master_seq_counter = 0
     end)
 
-    params:add_option("permute_follow_page", "follow page on playhead", { "off", "on" }, 1)
-    params:set_action("permute_follow_page", function(v)
-        app.follow_page_on_playhead = (v == 2)
-        app:request_redraw()
-        app:request_aux_redraw()
-    end)
-
     params:add_option("permute_reset_timing", "reset timing", RESET_TIMING_OPTIONS, 1)
     params:set_action("permute_reset_timing", function(v)
         app.reset_timing = RESET_TIMING_OPTIONS[v] or "instant"
@@ -178,6 +202,8 @@ function M.setup(app)
         end
         app:request_redraw()
     end)
+
+    add_permute_section("permute_section_clock_midi", "clock + midi", true)
 
     params:add_option("permute_ext_clock", "external midi clock", { "off", "on" }, 1)
     params:set_action("permute_ext_clock", function(v)
@@ -241,6 +267,53 @@ function M.setup(app)
         app.midi_in_auto_channel = clamp(tonumber(v) or 16, 1, 16)
     end)
 
+    add_permute_section("permute_section_playback_modes", "playback behavior", true)
+
+    params:add_option("permute_follow_page", "follow page on playhead", { "off", "on" }, 1)
+    params:set_action("permute_follow_page", function(v)
+        app.follow_page_on_playhead = (v == 2)
+        app:request_redraw()
+        app:request_aux_redraw()
+    end)
+
+    params:add_option("permute_beat_repeat_mode", "b. repeat mode", BEAT_REPEAT_MODES, 1)
+    params:set_action("permute_beat_repeat_mode", function(v)
+        app.beat_repeat_mode = BEAT_REPEAT_MODES[v] or BEAT_REPEAT_MODES[1]
+        app.beat_repeat_len = 0
+        app.beat_repeat_excluded = {}
+        if app.reset_step_select_repeat then app:reset_step_select_repeat() end
+        app:request_redraw()
+        app:request_aux_redraw()
+    end)
+
+    params:add_option("permute_beat_repeat_direction", "b. repeat direction", { "l->r", "l<-r" }, 1)
+    params:set_action("permute_beat_repeat_direction", function(v)
+        app.beat_repeat_direction = (v == 2) and "l<-r" or "l->r"
+        app:request_redraw()
+        app:request_aux_redraw()
+    end)
+
+    params:add_option("permute_transpose_mode", "transpose mode", TRANSPOSE_MODES, 1)
+    params:set_action("permute_transpose_mode", function(v)
+        app.transpose_mode = TRANSPOSE_MODES[v] or TRANSPOSE_MODES[1]
+        app:request_redraw()
+        app:request_aux_redraw()
+    end)
+
+    params:add_option("permute_temp_button_mode", "temp button mode", { "temp", "fill" }, 1)
+    params:set_action("permute_temp_button_mode", function(v)
+        app.temp_button_mode = (v == 2) and "fill" or "temp"
+        app.temp_latched = false
+        app.fill_latched = false
+        app.fill_active = false
+        app.fill_applied = false
+        app.temp_steps = {}
+        app:request_redraw()
+        app:request_aux_redraw()
+    end)
+
+    add_permute_section("permute_section_note_shaping", "note shaping", true)
+
     params:add_number("permute_melody_gate_ticks", "melody gate ticks", 1, 24, 5)
     params:set_action("permute_melody_gate_ticks", function(v)
         app.melody_gate_clocks = v
@@ -281,6 +354,8 @@ function M.setup(app)
         app:set_spice_accum_bounds(min_v, v)
     end)
 
+    add_permute_section("permute_section_outputs_display", "outputs + display", true)
+
     params:add_option("permute_crow_enabled", "crow enabled", { "off", "on" }, 1)
     params:set_action("permute_crow_enabled", function(v)
         app.crow_enabled = (v == 2)
@@ -308,41 +383,7 @@ function M.setup(app)
         app:request_redraw()
     end)
 
-    params:add_option("permute_beat_repeat_mode", "b. repeat mode", BEAT_REPEAT_MODES, 1)
-    params:set_action("permute_beat_repeat_mode", function(v)
-        app.beat_repeat_mode = BEAT_REPEAT_MODES[v] or BEAT_REPEAT_MODES[1]
-        app.beat_repeat_len = 0
-        app.beat_repeat_excluded = {}
-        if app.reset_step_select_repeat then app:reset_step_select_repeat() end
-        app:request_redraw()
-        app:request_aux_redraw()
-    end)
-
-    params:add_option("permute_beat_repeat_direction", "b. repeat direction", { "l->r", "l<-r" }, 1)
-    params:set_action("permute_beat_repeat_direction", function(v)
-        app.beat_repeat_direction = (v == 2) and "l<-r" or "l->r"
-        app:request_redraw()
-        app:request_aux_redraw()
-    end)
-
-    params:add_option("permute_transpose_mode", "transpose mode", TRANSPOSE_MODES, 1)
-    params:set_action("permute_transpose_mode", function(v)
-        app.transpose_mode = TRANSPOSE_MODES[v] or TRANSPOSE_MODES[1]
-        app:request_redraw()
-        app:request_aux_redraw()
-    end)
-
-    params:add_option("permute_temp_button_mode", "temp button mode", { "temp", "fill" }, 1)
-    params:set_action("permute_temp_button_mode", function(v)
-        app.temp_button_mode = (v == 2) and "fill" or "temp"
-        app.temp_latched = false
-        app.fill_latched = false
-        app.fill_active = false
-        app.fill_applied = false
-        app.temp_steps = {}
-        app:request_redraw()
-        app:request_aux_redraw()
-    end)
+    add_permute_section("permute_section_arc_controls", "arc controls", true)
 
     params:add_number("permute_arc_k1_threshold", "arc k1 threshold", 1, 32, 8)
     params:set_action("permute_arc_k1_threshold", function(v)
@@ -363,6 +404,8 @@ function M.setup(app)
     params:set_action("permute_arc_k4_threshold", function(v)
         app.arc_delta_thresholds[4] = clamp(tonumber(v) or 16, 1, 32)
     end)
+
+    add_permute_section("permute_section_actions", "actions", true)
 
     params:add_trigger("permute_panic", "panic")
     params:set_action("permute_panic", function()

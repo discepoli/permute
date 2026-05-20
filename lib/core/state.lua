@@ -174,30 +174,47 @@ function M.install(App)
         self.track_clock_div[t] = clamp(tonumber(self.track_clock_div[t]) or 1, 1, 64)
         if self.track_clock_phase[t] == nil then self.track_clock_phase[t] = 0 end
 
-        for s = 1, step_limit do
-            if tr.gates[s] == nil then tr.gates[s] = false end
-            if tr.ties[s] == nil then tr.ties[s] = false end
-            if not tr.gates[s] then tr.ties[s] = false end
-            tr.vels[s] = clamp(tonumber(tr.vels[s]) or cfg.DEFAULT_VEL_LEVEL, 1, 15)
-            if tc and tc.type == "poly" then
-                local pv = tr.pitches[s]
-                if type(pv) ~= "table" then
-                    pv = { clamp(tonumber(pv) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE) }
-                end
-                local clean = {}
-                local seen = {}
-                for _, d in ipairs(pv) do
-                    local di = clamp(tonumber(d) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
-                    if not seen[di] then
-                        clean[#clean + 1] = di
-                        seen[di] = true
+        if type(self.track_state_validated_step_limit) ~= "table" then
+            self.track_state_validated_step_limit = {}
+        end
+        local validated_limit = tonumber(self.track_state_validated_step_limit[t]) or 0
+        local needs_full_resync = validated_limit ~= step_limit
+        if not needs_full_resync then
+            needs_full_resync = tr.gates[1] == nil
+                or tr.gates[step_limit] == nil
+                or tr.vels[1] == nil
+                or tr.vels[step_limit] == nil
+                or tr.pitches[1] == nil
+                or tr.pitches[step_limit] == nil
+        end
+
+        if needs_full_resync then
+            for s = 1, step_limit do
+                if tr.gates[s] == nil then tr.gates[s] = false end
+                if tr.ties[s] == nil then tr.ties[s] = false end
+                if not tr.gates[s] then tr.ties[s] = false end
+                tr.vels[s] = clamp(tonumber(tr.vels[s]) or cfg.DEFAULT_VEL_LEVEL, 1, 15)
+                if tc and tc.type == "poly" then
+                    local pv = tr.pitches[s]
+                    if type(pv) ~= "table" then
+                        pv = { clamp(tonumber(pv) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE) }
                     end
+                    local clean = {}
+                    local seen = {}
+                    for _, d in ipairs(pv) do
+                        local di = clamp(tonumber(d) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
+                        if not seen[di] then
+                            clean[#clean + 1] = di
+                            seen[di] = true
+                        end
+                    end
+                    if #clean == 0 then clean[1] = 1 end
+                    tr.pitches[s] = clean
+                else
+                    tr.pitches[s] = clamp(tonumber(tr.pitches[s]) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
                 end
-                if #clean == 0 then clean[1] = 1 end
-                tr.pitches[s] = clean
-            else
-                tr.pitches[s] = clamp(tonumber(tr.pitches[s]) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
             end
+            self.track_state_validated_step_limit[t] = step_limit
         end
 
         return tr

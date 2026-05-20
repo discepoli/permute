@@ -149,6 +149,157 @@ function M.install(App)
         return labels[zone] or tostring(zone or "")
     end
 
+    function App:toggle_external_midi_record_mode()
+        self.external_midi_record_mode = not self.external_midi_record_mode
+        self:flash_mod_applied(cfg.MOD.TRANSPOSE, self.external_midi_record_mode and "midi rec on" or "midi rec off")
+        if self.lpp_enabled then
+            self:lpp_refresh_octave_leds()
+        end
+    end
+
+    function App:lpp_track_can_double_length(track)
+        local t = clamp(tonumber(track) or 1, 1, cfg.NUM_TRACKS)
+        local tr = self:ensure_track_state(t)
+        if not tr then return false end
+        local lo, hi = self:get_track_bounds(tr)
+        local len = hi - lo + 1
+        return len < self:get_track_step_limit()
+    end
+
+    function App:lpp_track_can_half_length(track)
+        local t = clamp(tonumber(track) or 1, 1, cfg.NUM_TRACKS)
+        local tr = self:ensure_track_state(t)
+        if not tr then return false end
+        local lo, hi = self:get_track_bounds(tr)
+        local len = hi - lo + 1
+        return len > 1
+    end
+
+    function App:lpp_double_track_length(track)
+        local t = clamp(tonumber(track) or 1, 1, cfg.NUM_TRACKS)
+        local tr = self:ensure_track_state(t)
+        local tc = self.track_cfg[t]
+        if not tr or not tc then return false, nil end
+
+        local start = clamp(tonumber(tr.start_step) or 1, 1, self:get_track_step_limit())
+        local finish = clamp(tonumber(tr.end_step) or cfg.NUM_STEPS, 1, self:get_track_step_limit())
+        local reverse = finish < start
+        local lo, hi = self:get_track_bounds(tr)
+        local len = hi - lo + 1
+        if len <= 0 then return false, nil end
+
+        local step_limit = self:get_track_step_limit()
+        local max_len = reverse and start or (step_limit - start + 1)
+        local new_len = math.min(len * 2, max_len)
+        local copy_len = new_len - len
+        if copy_len <= 0 then return false, len end
+
+        self:push_undo_state("lpp_double_len")
+
+        local function copy_step(src, dst)
+            tr.gates[dst] = not not tr.gates[src]
+            if tr.ties then tr.ties[dst] = not not tr.ties[src] end
+            tr.vels[dst] = clamp(tonumber(tr.vels[src]) or cfg.DEFAULT_VEL_LEVEL, 1, 15)
+            if tc.type == "poly" then
+                if type(tr.pitches[src]) == "table" then
+                    tr.pitches[dst] = deep_copy_table(tr.pitches[src])
+                else
+                    tr.pitches[dst] = { clamp(tonumber(tr.pitches[src]) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE) }
+                end
+            elseif tc.type ~= "drum" then
+                tr.pitches[dst] = clamp(tonumber(tr.pitches[src]) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
+            end
+
+            if type(self.ratios[t]) == "table" then
+                self.ratios[t][dst] = self.ratios[t][src] and deep_copy_table(self.ratios[t][src]) or nil
+            end
+            if type(self.spice[t]) == "table" then
+                self.spice[t][dst] = self.spice[t][src] and deep_copy_table(self.spice[t][src]) or nil
+            end
+            if type(self.fill_patterns[t]) == "table" then
+                self.fill_patterns[t][dst] = self.fill_patterns[t][src] and deep_copy_table(self.fill_patterns[t][src]) or nil
+            end
+        end
+
+        for i = 0, copy_len - 1 do
+            local src = reverse and (start - i) or (start + i)
+            local dst = reverse and (start - len - i) or (start + len + i)
+            if src < 1 or src > step_limit or dst < 1 or dst > step_limit then break end
+            copy_step(src, dst)
+        end
+
+        if reverse then
+            tr.end_step = clamp(start - new_len + 1, 1, step_limit)
+        else
+            tr.end_step = clamp(start + new_len - 1, 1, step_limit)
+        end
+
+        self:invalidate_step_cache(t)
+        self:request_arc_redraw()
+        self:request_redraw()
+        self:request_aux_redraw()
+        if self.lpp_enabled then self:lpp_refresh_octave_leds() end
+
+        return true, new_len
+    end
+
+    function App:lpp_half_track_length(track)
+        local t = clamp(tonumber(track) or 1, 1, cfg.NUM_TRACKS)
+        local tr = self:ensure_track_state(t)
+        if not tr then return false, nil end
+
+        local step_limit = self:get_track_step_limit()
+        local start = clamp(tonumber(tr.start_step) or 1, 1, step_limit)
+        local finish = clamp(tonumber(tr.end_step) or cfg.NUM_STEPS, 1, step_limit)
+        local reverse = finish < start
+        local lo, hi = self:get_track_bounds(tr)
+        local len = hi - lo + 1
+        if len <= 1 then return false, len end
+
+        local new_len = math.max(1, math.floor(len / 2))
+        if new_len == len then return false, len end
+
+        self:push_undo_state("lpp_half_len")
+
+        if reverse then
+            tr.end_step = clamp(start - new_len + 1, 1, step_limit)
+        else
+            tr.end_step = clamp(start + new_len - 1, 1, step_limit)
+        end
+
+        self:invalidate_step_cache(t)
+        self:request_arc_redraw()
+        self:request_redraw()
+        self:request_aux_redraw()
+        if self.lpp_enabled then self:lpp_refresh_octave_leds() end
+        return true, new_len
+    end
+
+    function App:mark_recorded_step_skip_once(track, step)
+        local t = clamp(tonumber(track) or 1, 1, cfg.NUM_TRACKS)
+        local s = clamp(tonumber(step) or 1, 1, self:get_track_step_limit())
+        if type(self.midi_record_skip_once) ~= "table" then self.midi_record_skip_once = {} end
+        if type(self.midi_record_skip_once[t]) ~= "table" then self.midi_record_skip_once[t] = {} end
+        self.midi_record_skip_once[t][s] = now_ms()
+    end
+
+    function App:get_recorded_step_skip_window_ms()
+        local bpm = clamp(tonumber(self.tempo_bpm) or 120, 20, 300)
+        local step_ms = (60 / bpm) * 1000 / 4
+        return clamp(math.floor(step_ms * 1.25), 40, 220)
+    end
+
+    function App:consume_recorded_step_skip_once(track, step)
+        local t = clamp(tonumber(track) or 1, 1, cfg.NUM_TRACKS)
+        local s = clamp(tonumber(step) or 1, 1, self:get_track_step_limit())
+        local by_track = type(self.midi_record_skip_once) == "table" and self.midi_record_skip_once[t] or nil
+        if type(by_track) ~= "table" or not by_track[s] then return false end
+        local stamped_at = tonumber(by_track[s]) or 0
+        by_track[s] = nil
+        local elapsed = math.max(0, now_ms() - stamped_at)
+        return elapsed <= self:get_recorded_step_skip_window_ms()
+    end
+
     function App:lpp_apply_zone_octave(zone, delta)
         if zone == "zone_a" then return end
         local amount = clamp(tonumber(delta) or 0, -1, 1)
@@ -239,8 +390,12 @@ function M.install(App)
             end
         end
 
-        self:lpp_led_set("zone_a_page_1", self.lpp_drum_page == 1 and 21 or 1, "static")
-        self:lpp_led_set("zone_a_page_2", self.lpp_drum_page == 2 and 21 or 1, "static")
+        self:lpp_led_set("zone_a_midi_record", self.external_midi_record_mode and 5 or 0, "static")
+        self:lpp_led_set("zone_a_page_toggle", self.lpp_drum_page == 1 and 9 or 45, "static")
+        self:lpp_led_set("zone_length_modifier", self.lpp_length_modifier_held and 15 or 1, "static")
+        local zone_b_track = self:lpp_zone_target_track("zone_b")
+        local zone_b_tc = zone_b_track and self.track_cfg[zone_b_track] or nil
+        self:lpp_led_set("zone_b_clear_track", (zone_b_tc and zone_b_tc.type ~= "drum") and 21 or 1, "static")
 
         for i = 1, 8 do
             local track = i + ((self.lpp_drum_page - 1) * 8)
@@ -249,20 +404,32 @@ function M.install(App)
                 and clamp(tonumber(self.lpp_clear_button_mapped_color) or 9, 0, 127)
                 or clamp(tonumber(self.lpp_clear_button_unmapped_color) or 1, 0, 127)
             self:lpp_led_set("clear_drum_track_" .. tostring(i), color, "static")
+            local can_resize = self.lpp_length_modifier_held
+                and self:lpp_track_can_half_length(track)
+                or self:lpp_track_can_double_length(track)
+            self:lpp_led_set("duplicate_drum_track_" .. tostring(i), can_resize and 21 or 1, "static")
+        end
+
+        for _, zone in ipairs({ "zone_b", "zone_c", "zone_d", "zone_e" }) do
+            local track = self:lpp_zone_target_track(zone)
+            local can_resize = track and (self.lpp_length_modifier_held
+                and self:lpp_track_can_half_length(track)
+                or self:lpp_track_can_double_length(track))
+            self:lpp_led_set(zone .. "_double_length", can_resize and 21 or 1, "static")
         end
     end
 
     function App:lpp_handle_control_action(control_key)
         if type(control_key) ~= "string" then return end
 
-        if control_key == "zone_a_page_1" then
-            self.lpp_drum_page = 1
-            self:flash_status("drums", "page 1", 0.35)
-            self:lpp_refresh_octave_leds()
+        if control_key == "zone_a_midi_record" then
+            self:toggle_external_midi_record_mode()
+            self:request_redraw()
+            self:request_aux_redraw()
             return
-        elseif control_key == "zone_a_page_2" then
-            self.lpp_drum_page = 2
-            self:flash_status("drums", "page 2", 0.35)
+        elseif control_key == "zone_a_page_toggle" then
+            self.lpp_drum_page = (clamp(tonumber(self.lpp_drum_page) or 1, 1, 2) == 1) and 2 or 1
+            self:flash_status("drums", "page " .. tostring(self.lpp_drum_page), 0.35)
             self:lpp_refresh_octave_leds()
             return
         end
@@ -279,6 +446,50 @@ function M.install(App)
                     self:clear_track(track)
                     self:flash_status("clear drum", tostring(track), 0.35)
                     self:lpp_refresh_octave_leds()
+                end
+            end
+            return
+        end
+
+        local dup_idx = string.match(control_key, "^duplicate_drum_track_(%d+)$")
+        if dup_idx then
+            local idx = clamp(tonumber(dup_idx) or 1, 1, 8)
+            local track = idx + ((clamp(tonumber(self.lpp_drum_page) or 1, 1, 2) - 1) * 8)
+            if track >= 1 and track <= cfg.NUM_TRACKS then
+                local tc = self.track_cfg[track]
+                if tc and tc.type == "drum" then
+                    local ok, new_len
+                    if self.lpp_length_modifier_held then
+                        ok, new_len = self:lpp_half_track_length(track)
+                        self:flash_status("1/2 t" .. tostring(track), ok and (tostring(new_len) .. " steps") or "min", 0.45)
+                    else
+                        ok, new_len = self:lpp_double_track_length(track)
+                        self:flash_status("x2 t" .. tostring(track), ok and (tostring(new_len) .. " steps") or "max", 0.45)
+                    end
+                end
+            end
+            return
+        end
+
+        local double_zone = string.match(control_key, "^(zone_[bcde])_double_length$")
+        if double_zone then
+            local track = self:lpp_zone_target_track(double_zone)
+            if track then
+                local ok, new_len
+                if self.lpp_length_modifier_held then
+                    ok, new_len = self:lpp_half_track_length(track)
+                    if ok then
+                        self:flash_status("1/2 t" .. tostring(track), tostring(new_len) .. " steps", 0.45)
+                    else
+                        self:flash_status("1/2 t" .. tostring(track), "min", 0.35)
+                    end
+                else
+                    ok, new_len = self:lpp_double_track_length(track)
+                    if ok then
+                        self:flash_status("x2 t" .. tostring(track), tostring(new_len) .. " steps", 0.45)
+                    else
+                        self:flash_status("x2 t" .. tostring(track), "max", 0.35)
+                    end
                 end
             end
             return
@@ -307,7 +518,6 @@ function M.install(App)
     end
 
     function App:lpp_handle_control_message(message_type, id, value)
-        if value <= 0 then return false end
         local msg_type = message_type or ""
         local msg_id = tostring(clamp(tonumber(id) or 0, 0, 127))
         local key = lpp_map.lpp_outer_control_by_message[msg_type .. ":" .. msg_id]
@@ -316,6 +526,12 @@ function M.install(App)
             key = lpp_map.lpp_outer_control_by_message[fallback_type .. ":" .. msg_id]
         end
         if not key then return false end
+        if key == "zone_length_modifier" then
+            self.lpp_length_modifier_held = value > 0
+            if self.lpp_enabled then self:lpp_refresh_octave_leds() end
+            return true
+        end
+        if value <= 0 then return false end
         self:lpp_handle_control_action(key)
         return true
     end
@@ -482,6 +698,9 @@ function M.install(App)
         local tc = self.track_cfg[t]
         local step = self:get_realtime_target_step(t)
         if not tr or not tc or not step then return end
+        if is_note_on then
+            self:mark_recorded_step_skip_once(t, step)
+        end
 
         if tr.ties then tr.ties[step] = false end
         local vel_level = self:midi_to_vel_level(clamp(tonumber(velocity) or self:get_track_default_midi_velocity(t), 0,

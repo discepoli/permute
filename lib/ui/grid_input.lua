@@ -243,7 +243,37 @@ function M.install(App)
     end
 
     function App:handle_grid_key(port, x, y, z)
-        self:invalidate_step_cache()
+        local function infer_cache_track()
+            if port == self.aux_grid_port then
+                return clamp(tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+            end
+            if port ~= self.main_grid_port then return nil end
+
+            local mod_row = self:get_main_mod_row()
+            local dyn_row = self:get_main_dynamic_row()
+            local route, route_track = self:route_main_grid_event(x, y, mod_row, dyn_row)
+
+            if route == "realtime" then
+                return clamp(tonumber(route_track) or tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+            elseif route == "takeover" or route == "transpose_takeover" then
+                return clamp(tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+            elseif route == "overview" then
+                local t = self:row_to_track(y)
+                if t and t >= 1 and t <= cfg.NUM_TRACKS then return t end
+                return nil
+            elseif route == "dynamic" then
+                return clamp(tonumber(self.sel_track) or ((self.held and self.held.t) or 1), 1, cfg.NUM_TRACKS)
+            end
+            return nil
+        end
+
+        local cache_track = infer_cache_track()
+        if cache_track then
+            self:invalidate_step_cache(cache_track)
+        elseif port == self.main_grid_port and y == self:get_main_mod_row() then
+            self:invalidate_step_cache()
+        end
+
         if port == self.aux_grid_port then
             self:handle_aux_grid_event(x, y, z)
             return
@@ -504,7 +534,7 @@ function M.install(App)
         local did_push = false
         local function ensure_push()
             if not did_push then
-                self:push_undo_state()
+                self:push_undo_state("grid_step_edit")
                 did_push = true
             end
         end
@@ -711,7 +741,7 @@ function M.install(App)
                     local did_push = false
                     local function ensure_push()
                         if not did_push then
-                            self:push_undo_state()
+                            self:push_undo_state("grid_step_edit")
                             did_push = true
                         end
                     end
@@ -895,14 +925,18 @@ function M.install(App)
 
         local t = self:row_to_track(y)
         if t and t >= 1 and t <= cfg.NUM_TRACKS then
-            x = self:get_track_visible_step(t, x)
+            local page_override = nil
+            if (self.mod_held[cfg.MOD.START] or self.mod_held[cfg.MOD.END_STEP]) and not self.speed_mode then
+                page_override = self:get_track_view_page(self.sel_track or t)
+            end
+            x = self:get_track_visible_step(t, x, page_override)
             local prev_held = self.held
             local prev_sel_track = self.sel_track
             if z == 1 then
                 local did_push = false
                 local function ensure_push()
                     if not did_push then
-                        self:push_undo_state()
+                        self:push_undo_state("grid_step_edit")
                         did_push = true
                     end
                 end
