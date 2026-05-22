@@ -88,6 +88,28 @@ function M.install(App)
                 return
             end
 
+            if x == cfg.MOD.END_STEP and self.mod_held[cfg.MOD.SHIFT] then
+                self.mod_shortcut_consumed[x] = true
+                local track = clamp(tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+                self.sel_track = track
+                local ok, new_len = self:lpp_double_track_length(track)
+                self:flash_mod_applied(cfg.MOD.END_STEP, ok and ("x2 " .. tostring(new_len)) or "max")
+                self:request_redraw()
+                self:request_aux_redraw()
+                return
+            end
+
+            if x == cfg.MOD.START and self.mod_held[cfg.MOD.SHIFT] then
+                self.mod_shortcut_consumed[x] = true
+                local track = clamp(tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+                self.sel_track = track
+                local ok, new_len = self:lpp_half_track_length(track)
+                self:flash_mod_applied(cfg.MOD.START, ok and ("1/2 " .. tostring(new_len)) or "min")
+                self:request_redraw()
+                self:request_aux_redraw()
+                return
+            end
+
             if x == cfg.MOD.TEMP then
                 local now = now_ms()
                 local use_fill = self:is_temp_button_fill_mode()
