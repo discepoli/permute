@@ -269,14 +269,14 @@ function M.setup(app)
 
     add_permute_section("permute_section_playback_modes", "playback behavior", true)
 
-    params:add_option("permute_follow_page", "follow main page on playhead", { "off", "on" }, 1)
+    params:add_option("permute_follow_page", "follow main page", { "off", "on" }, 1)
     params:set_action("permute_follow_page", function(v)
         app.follow_page_on_playhead = (v == 2)
         app:request_redraw()
         app:request_aux_redraw()
     end)
 
-    params:add_option("permute_follow_page_aux_takeover", "follow aux/takeover page on playhead", { "off", "on" }, 1)
+    params:add_option("permute_follow_page_aux_takeover", "follow edit page", { "off", "on" }, 1)
     params:set_action("permute_follow_page_aux_takeover", function(v)
         app.follow_page_on_playhead_aux_takeover = (v == 2)
         app:request_redraw()
