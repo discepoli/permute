@@ -860,7 +860,7 @@ function M.install(App)
                 local step_cache = self:build_arc_step_cache(t, tr, tc)
                 local track_playhead = self:get_track_step(t)
                 local lo, hi = self:get_track_bounds(tr)
-                local view_page = self:get_track_view_page(t)
+                local view_page = self:get_track_main_grid_page(t)
                 if (self.mod_held[cfg.MOD.START] or self.mod_held[cfg.MOD.END_STEP]) and not self.speed_mode then
                     view_page = self:get_track_view_page(self.sel_track or t)
                 end

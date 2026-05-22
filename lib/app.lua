@@ -87,10 +87,12 @@ function App.new()
     self.track_transpose = {}
     self.track_edit_octave_page = {}
     self.track_view_page = {}
+    self.track_playhead_page = {}
     self.track_rand_gate_prob = {}
     self.track_rand_pitch_prob = {}
     self.track_rand_pitch_span = {}
     self.follow_page_on_playhead = false
+    self.follow_page_on_playhead_aux_takeover = false
     self.transpose_mode = "semitone"
     self.transpose_takeover_mode = false
     self.transpose_seq_enabled = false

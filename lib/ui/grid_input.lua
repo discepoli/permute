@@ -925,7 +925,7 @@ function M.install(App)
 
         local t = self:row_to_track(y)
         if t and t >= 1 and t <= cfg.NUM_TRACKS then
-            local page_override = nil
+            local page_override = self:get_track_main_grid_page(t)
             if (self.mod_held[cfg.MOD.START] or self.mod_held[cfg.MOD.END_STEP]) and not self.speed_mode then
                 page_override = self:get_track_view_page(self.sel_track or t)
             end

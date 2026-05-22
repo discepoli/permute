@@ -68,6 +68,31 @@ function M.install(App)
         return next_page
     end
 
+    function App:get_track_playhead_page(track)
+        local t = clamp(tonumber(track) or tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+        if type(self.track_playhead_page) ~= "table" then self.track_playhead_page = {} end
+        local fallback = self:get_track_view_page(t)
+        local page = clamp(tonumber(self.track_playhead_page[t]) or fallback, 1, self:get_track_max_pages())
+        self.track_playhead_page[t] = page
+        return page
+    end
+
+    function App:set_track_playhead_page(track, page)
+        local t = clamp(tonumber(track) or tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+        if type(self.track_playhead_page) ~= "table" then self.track_playhead_page = {} end
+        local next_page = clamp(tonumber(page) or 1, 1, self:get_track_max_pages())
+        self.track_playhead_page[t] = next_page
+        return next_page
+    end
+
+    function App:get_track_main_grid_page(track)
+        local t = clamp(tonumber(track) or tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+        if self.follow_page_on_playhead and not self.takeover_mode and not self.transpose_takeover_mode then
+            return self:get_track_playhead_page(t)
+        end
+        return self:get_track_view_page(t)
+    end
+
     function App:get_track_visible_step(track, column, page_override)
         local t = clamp(tonumber(track) or tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
         local page = page_override and clamp(tonumber(page_override) or 1, 1, self:get_track_max_pages()) or
@@ -118,6 +143,7 @@ function M.install(App)
             self.track_steps[t] = 1
             self.track_clock_phase[t] = 0
             self.track_loop_count[t] = 1
+            self:set_track_playhead_page(t, self:get_track_view_page(t))
         end
         self:request_redraw()
         self:request_aux_redraw()

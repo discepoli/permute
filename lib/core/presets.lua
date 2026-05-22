@@ -228,6 +228,7 @@ function M.install(App)
             master_seq_len_enabled = self.master_seq_len_enabled,
             master_seq_len = self.master_seq_len,
             follow_page_on_playhead = self.follow_page_on_playhead,
+            follow_page_on_playhead_aux_takeover = self.follow_page_on_playhead_aux_takeover,
             send_midi_clock_out = self.send_midi_clock_out,
             send_midi_start_stop_out = self.send_midi_start_stop_out,
             spice_accum_min = self.spice_accum_min,
@@ -302,6 +303,9 @@ function M.install(App)
         if state.follow_page_on_playhead ~= nil then
             self.follow_page_on_playhead = not not state.follow_page_on_playhead
         end
+        if state.follow_page_on_playhead_aux_takeover ~= nil then
+            self.follow_page_on_playhead_aux_takeover = not not state.follow_page_on_playhead_aux_takeover
+        end
         if state.send_midi_clock_out ~= nil then self.send_midi_clock_out = not not state.send_midi_clock_out end
         if state.send_midi_start_stop_out ~= nil then self.send_midi_start_stop_out = not not state.send_midi_start_stop_out end
         self:set_spice_accum_bounds(state.spice_accum_min, state.spice_accum_max)
@@ -366,6 +370,7 @@ function M.install(App)
             if not self.track_clock_mult[t] then self.track_clock_mult[t] = 1 end
             if type(self.track_view_page) ~= "table" then self.track_view_page = {} end
             self.track_view_page[t] = self:set_track_view_page(t, self.track_view_page[t] or 1)
+            self:set_track_playhead_page(t, self.track_view_page[t])
             if not self.track_clock_phase[t] then self.track_clock_phase[t] = 0 end
             if not self.track_transpose[t] then self.track_transpose[t] = 0 end
             self.track_rand_gate_prob[t] = clamp(tonumber(self.track_rand_gate_prob[t]) or 0, 0, 1)
