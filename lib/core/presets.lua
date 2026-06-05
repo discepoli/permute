@@ -203,6 +203,7 @@ function M.install(App)
             track_clock_mult = deep_copy_table(self.track_clock_mult),
             track_transpose = deep_copy_table(self.track_transpose),
             track_view_page = deep_copy_table(self.track_view_page),
+            track_aux_page = deep_copy_table(self.track_aux_page),
             track_rand_gate_prob = deep_copy_table(self.track_rand_gate_prob),
             track_rand_pitch_prob = deep_copy_table(self.track_rand_pitch_prob),
             track_rand_pitch_span = deep_copy_table(self.track_rand_pitch_span),
@@ -229,6 +230,7 @@ function M.install(App)
             master_seq_len = self.master_seq_len,
             follow_page_on_playhead = self.follow_page_on_playhead,
             follow_page_on_playhead_aux_takeover = self.follow_page_on_playhead_aux_takeover,
+            follow_page_on_playhead_aux = self.follow_page_on_playhead_aux,
             send_midi_clock_out = self.send_midi_clock_out,
             send_midi_start_stop_out = self.send_midi_start_stop_out,
             spice_accum_min = self.spice_accum_min,
@@ -269,6 +271,7 @@ function M.install(App)
             "track_clock_mult",
             "track_transpose",
             "track_view_page",
+            "track_aux_page",
             "track_rand_gate_prob",
             "track_rand_pitch_prob",
             "track_rand_pitch_span",
@@ -305,6 +308,9 @@ function M.install(App)
         end
         if state.follow_page_on_playhead_aux_takeover ~= nil then
             self.follow_page_on_playhead_aux_takeover = not not state.follow_page_on_playhead_aux_takeover
+        end
+        if state.follow_page_on_playhead_aux ~= nil then
+            self.follow_page_on_playhead_aux = not not state.follow_page_on_playhead_aux
         end
         if state.send_midi_clock_out ~= nil then self.send_midi_clock_out = not not state.send_midi_clock_out end
         if state.send_midi_start_stop_out ~= nil then self.send_midi_start_stop_out = not not state.send_midi_start_stop_out end
@@ -370,6 +376,8 @@ function M.install(App)
             if not self.track_clock_mult[t] then self.track_clock_mult[t] = 1 end
             if type(self.track_view_page) ~= "table" then self.track_view_page = {} end
             self.track_view_page[t] = self:set_track_view_page(t, self.track_view_page[t] or 1)
+            if type(self.track_aux_page) ~= "table" then self.track_aux_page = {} end
+            self.track_aux_page[t] = self:set_track_aux_page(t, self.track_aux_page[t] or self.track_view_page[t])
             self:set_track_playhead_page(t, self.track_view_page[t])
             if not self.track_clock_phase[t] then self.track_clock_phase[t] = 0 end
             if not self.track_transpose[t] then self.track_transpose[t] = 0 end

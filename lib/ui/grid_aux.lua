@@ -213,7 +213,7 @@ function M.install(App)
         local current_step = self:get_track_step(t)
         local lo, hi = self:get_track_bounds(tr)
         local scale = cfg.SCALES[self.scale_type] or cfg.SCALES.chromatic
-        local view_page = self:get_track_view_page(t)
+        local view_page = self:get_track_aux_page(t)
 
         if tc.type == "drum" then
             for col = 1, cfg.NUM_STEPS do

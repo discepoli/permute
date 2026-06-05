@@ -286,12 +286,14 @@ function M.install(App)
                 local max_pages = self:get_track_max_pages()
                 if x <= max_pages then
                     local page = self:set_track_view_page(self.sel_track, x)
+                    self:set_track_aux_page(self.sel_track, page)
                     applied_value = "page " .. tostring(page)
                 end
             elseif self.mod_held[cfg.MOD.END_STEP] and not self.mod_held[cfg.MOD.START] and not self.speed_mode and self.sel_track then
                 local max_pages = self:get_track_max_pages()
                 if x <= max_pages then
                     local page = self:set_track_view_page(self.sel_track, x)
+                    self:set_track_aux_page(self.sel_track, page)
                     applied_value = "page " .. tostring(page)
                 end
             elseif self.mod_held[cfg.MOD.RAND_NOTES] and not self.mod_held[cfg.MOD.RAND_STEPS] and self.sel_track then

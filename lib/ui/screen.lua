@@ -264,8 +264,10 @@ function M.install(App)
             local page = self.sel_track and tostring(self:get_track_main_grid_page(self.sel_track)) or "-"
             local follow_main = self.follow_page_on_playhead and "on" or "off"
             local follow_edit = self.follow_page_on_playhead_aux_takeover and "on" or "off"
+            local follow_aux = self.follow_page_on_playhead_aux and "on" or "off"
             row("track: " .. sel, 10)
-            row("page: " .. page .. " (m " .. follow_main .. " / e " .. follow_edit .. ")", 10)
+            row("page: " .. page .. " (m " .. follow_main .. " / e " .. follow_edit .. " / a " .. follow_aux .. ")",
+                10)
             row("clock: " .. (self.use_midi_clock and "midi" or "internal"), 10)
         end
     end
@@ -404,7 +406,11 @@ function M.install(App)
                 local page = self.sel_track and tostring(self:get_track_main_grid_page(self.sel_track)) or "-"
                 local follow_main = self.follow_page_on_playhead and "on" or "off"
                 local follow_edit = self.follow_page_on_playhead_aux_takeover and "on" or "off"
-                screen.text("track: " .. sel .. "  page: " .. page .. " (m " .. follow_main .. " / e " .. follow_edit .. ")")
+                local follow_aux = self.follow_page_on_playhead_aux and "on" or "off"
+                screen.text("track: " ..
+                    sel ..
+                    "  page: " ..
+                    page .. " (m " .. follow_main .. " / e " .. follow_edit .. " / a " .. follow_aux .. ")")
 
                 screen.move(0, y5)
                 screen.text("clock: " .. (self.use_midi_clock and "midi" or "internal"))

@@ -147,7 +147,7 @@ function M.install(App)
 
             for _ = 1, hits do
                 local st = self:get_track_step(t)
-                if (self.follow_page_on_playhead or self.follow_page_on_playhead_aux_takeover)
+                if (self.follow_page_on_playhead or self.follow_page_on_playhead_aux_takeover or self.follow_page_on_playhead_aux)
                     and not self.mod_held[cfg.MOD.START]
                     and not self.mod_held[cfg.MOD.END_STEP] then
                     local desired_page = 1
@@ -161,6 +161,10 @@ function M.install(App)
                     end
                     if self.follow_page_on_playhead_aux_takeover and desired_page ~= self:get_track_view_page(t) then
                         self:set_track_view_page(t, desired_page)
+                        changed = true
+                    end
+                    if self.follow_page_on_playhead_aux and desired_page ~= self:get_track_aux_page(t) then
+                        self:set_track_aux_page(t, desired_page)
                         changed = true
                     end
                     if changed then

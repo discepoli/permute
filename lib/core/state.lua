@@ -68,6 +68,23 @@ function M.install(App)
         return next_page
     end
 
+    function App:get_track_aux_page(track)
+        local t = clamp(tonumber(track) or tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+        if type(self.track_aux_page) ~= "table" then self.track_aux_page = {} end
+        local fallback = self:get_track_view_page(t)
+        local page = clamp(tonumber(self.track_aux_page[t]) or fallback, 1, self:get_track_max_pages())
+        self.track_aux_page[t] = page
+        return page
+    end
+
+    function App:set_track_aux_page(track, page)
+        local t = clamp(tonumber(track) or tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+        if type(self.track_aux_page) ~= "table" then self.track_aux_page = {} end
+        local next_page = clamp(tonumber(page) or 1, 1, self:get_track_max_pages())
+        self.track_aux_page[t] = next_page
+        return next_page
+    end
+
     function App:get_track_playhead_page(track)
         local t = clamp(tonumber(track) or tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
         if type(self.track_playhead_page) ~= "table" then self.track_playhead_page = {} end

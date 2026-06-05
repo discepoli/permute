@@ -130,7 +130,7 @@ function M.setup(app)
     local section_count = 8
     local spacer_count = section_count - 1
     local permute_section_count = (params and params.add_separator) and (section_count + spacer_count) or 0
-    params:add_group("permute_seq", "permute", 43 + permute_section_count)
+    params:add_group("permute_seq", "permute", 44 + permute_section_count)
 
     add_permute_section("permute_section_music", "music")
 
@@ -279,6 +279,13 @@ function M.setup(app)
     params:add_option("permute_follow_page_aux_takeover", "follow edit page", { "off", "on" }, 1)
     params:set_action("permute_follow_page_aux_takeover", function(v)
         app.follow_page_on_playhead_aux_takeover = (v == 2)
+        app:request_redraw()
+        app:request_aux_redraw()
+    end)
+
+    params:add_option("permute_follow_page_aux", "follow aux page", { "off", "on" }, 1)
+    params:set_action("permute_follow_page_aux", function(v)
+        app.follow_page_on_playhead_aux = (v == 2)
         app:request_redraw()
         app:request_aux_redraw()
     end)

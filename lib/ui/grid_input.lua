@@ -520,7 +520,7 @@ function M.install(App)
 
         local tr = self:ensure_track_state(t)
         local tc = self.track_cfg[t]
-        x = self:get_track_visible_step(t, x)
+        x = self:get_track_visible_step(t, x, self:get_track_aux_page(t))
         local prev_held = self.held
 
         if z == 0 then
