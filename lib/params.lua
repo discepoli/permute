@@ -130,7 +130,7 @@ function M.setup(app)
     local section_count = 8
     local spacer_count = section_count - 1
     local permute_section_count = (params and params.add_separator) and (section_count + spacer_count) or 0
-    params:add_group("permute_seq", "permute", 44 + permute_section_count)
+    params:add_group("permute_seq", "permute", 45 + permute_section_count)
 
     add_permute_section("permute_section_music", "music")
 
@@ -288,6 +288,11 @@ function M.setup(app)
         app.follow_page_on_playhead_aux = (v == 2)
         app:request_redraw()
         app:request_aux_redraw()
+    end)
+
+    params:add_number("permute_global_swing", "global swing %", 25, 75, 50)
+    params:set_action("permute_global_swing", function(v)
+        app.global_swing_percent = clamp(tonumber(v) or 50, 25, 75)
     end)
 
     params:add_option("permute_beat_repeat_mode", "b. repeat mode", BEAT_REPEAT_MODES, 1)

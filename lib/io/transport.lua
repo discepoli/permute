@@ -16,6 +16,19 @@ local TRACK_SELECT_MOD = H.TRACK_SELECT_MOD
 local M = {}
 
 function M.install(App)
+    function App:get_track_swing_percent(_track)
+        return clamp(tonumber(self.global_swing_percent) or 50, 25, 75)
+    end
+
+    function App:get_track_swing_step_ticks(track, step_counter)
+        local swing_ratio = self:get_track_swing_percent(track) / 100
+        local pair_ticks = cfg.MIDI_CLOCK_TICKS_PER_STEP * 2
+        local first_ticks = math.max(0.001, pair_ticks * swing_ratio)
+        local second_ticks = math.max(0.001, pair_ticks - first_ticks)
+        local ts = math.max(tonumber(step_counter) or 1, 1)
+        return (ts % 2 == 0) and second_ticks or first_ticks
+    end
+
     function App:is_reset_timing_next_beat()
         return self.reset_timing == "next beat"
     end
@@ -134,7 +147,10 @@ function M.install(App)
             local len = math.abs((tonumber(tr.end_step) or self:get_track_step_limit()) - (tonumber(tr.start_step) or 1)) + 1
             local mult = self.track_clock_mult[t]
             local div = self.track_clock_div[t]
-            local ratio = (mult / div) * scale
+            local ts = tonumber(self.track_steps[t]) or 1
+            local swing_ticks = self:get_track_swing_step_ticks(t, ts)
+            local swing_factor = cfg.MIDI_CLOCK_TICKS_PER_STEP / math.max(0.001, swing_ticks)
+            local ratio = (mult / div) * scale * swing_factor
             self.track_clock_phase[t] = (tonumber(self.track_clock_phase[t]) or 0) + ratio
             local hits = math.floor(self.track_clock_phase[t])
             if hits > 0 then

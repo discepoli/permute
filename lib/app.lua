@@ -95,6 +95,7 @@ function App.new()
     self.follow_page_on_playhead = false
     self.follow_page_on_playhead_aux_takeover = false
     self.follow_page_on_playhead_aux = false
+    self.global_swing_percent = 50
     self.transpose_mode = "semitone"
     self.transpose_takeover_mode = false
     self.transpose_seq_enabled = false

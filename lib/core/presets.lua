@@ -228,6 +228,7 @@ function M.install(App)
             beat_repeat_excluded = deep_copy_table(self.beat_repeat_excluded),
             master_seq_len_enabled = self.master_seq_len_enabled,
             master_seq_len = self.master_seq_len,
+            global_swing_percent = self.global_swing_percent,
             follow_page_on_playhead = self.follow_page_on_playhead,
             follow_page_on_playhead_aux_takeover = self.follow_page_on_playhead_aux_takeover,
             follow_page_on_playhead_aux = self.follow_page_on_playhead_aux,
@@ -303,6 +304,7 @@ function M.install(App)
         end
         self.master_seq_len_enabled = not not state.master_seq_len_enabled
         self.master_seq_len = clamp(tonumber(state.master_seq_len) or cfg.DEFAULT_MASTER_SEQ_LEN, 1, cfg.MAX_MASTER_SEQ_LEN)
+        self.global_swing_percent = clamp(tonumber(state.global_swing_percent) or self.global_swing_percent or 50, 25, 75)
         if state.follow_page_on_playhead ~= nil then
             self.follow_page_on_playhead = not not state.follow_page_on_playhead
         end
