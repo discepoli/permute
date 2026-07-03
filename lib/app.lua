@@ -225,6 +225,7 @@ function App.new()
     self.clock_debug_rate_counts = {}
     self.clock_debug_rate_start_ms = nil
     self.clock_debug_rate_last_ms = nil
+    self.clock_debug_note_events = false
 
     local track_step_limit = math.max(tonumber(cfg.MAX_STEPS) or cfg.NUM_STEPS, cfg.NUM_STEPS)
     for t = 1, cfg.NUM_TRACKS do

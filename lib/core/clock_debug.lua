@@ -1,5 +1,6 @@
 local H = include("lib/core/util")
 local ensure_dir = H.ensure_dir
+local cfg = H.cfg
 
 local M = {}
 
@@ -44,6 +45,27 @@ function M.install(App)
         end
     end
 
+    function App:clock_debug_log_note_on(track, step, note, ch, vel)
+        if not self.clock_debug_enabled or not self.clock_debug_note_events then return end
+        local tick = tonumber(self.transport_clock) or 0
+        local step_ticks = tonumber(cfg.MIDI_CLOCK_TICKS_PER_STEP) or 6
+        local beat_ticks = step_ticks * 4
+        self:clock_debug_log(string.format(
+            "[%s] note_on tick=%.3f step_mod=%.3f beat_mod=%.3f track=%d counter=%d step=%d note=%d ch=%d vel=%d swing=%d profile=%s",
+            os.date("%H:%M:%S"),
+            tick,
+            tick % step_ticks,
+            tick % beat_ticks,
+            tonumber(track) or 0,
+            tonumber((self.track_steps or {})[track]) or 0,
+            tonumber(step) or 0,
+            tonumber(note) or 0,
+            tonumber(ch) or 0,
+            tonumber(vel) or 0,
+            tonumber(self.global_swing_percent) or 50,
+            tostring(self.global_swing_profile or "linear")))
+    end
+
     function App:_clock_debug_flush()
         local h = self.clock_debug_log_handle
         local b = self.clock_debug_buffer
@@ -62,7 +84,9 @@ function M.install(App)
         if prev then
             local dt = t_start - prev
             local ppqn = self.use_midi_clock and 24 or math.max(tonumber(self.transport_scheduler_ppqn) or 24, 24)
-            local expected = 60000 / ((tonumber(self.tempo_bpm) or 120) * ppqn)
+            local bpm = (self.use_midi_clock and tonumber(self.external_clock_bpm_estimate)) or
+                tonumber(self.tempo_bpm) or 120
+            local expected = 60000 / (bpm * ppqn)
             local thr = tonumber(self.clock_debug_threshold_ms) or 2
             local delta = dt - expected
             local dt_samples = self.clock_debug_dt_samples or {}

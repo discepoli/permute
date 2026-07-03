@@ -35,10 +35,14 @@ function M.install(App)
         local timing = tables[profile] or tables.mpc1000 or {}
         local p = self:get_track_swing_percent(track)
         local ts = math.max(tonumber(step_counter) or 1, 1)
-        local idx = ((ts - 1) % 16) + 1
+        local idx = (ts % 16) + 1
         local ticks = cfg.MIDI_CLOCK_TICKS_PER_STEP
 
-        if p >= 50 then
+        if p == 50 or ts == 1 then
+            return ticks
+        end
+
+        if p > 50 then
             local tpl = timing[p]
             if type(tpl) == "table" then
                 ticks = tonumber(tpl[idx]) or ticks
@@ -229,9 +233,12 @@ function M.install(App)
             local swing_factor = cfg.MIDI_CLOCK_TICKS_PER_STEP / math.max(0.001, swing_ticks)
             local ratio = (mult / div) * scale * swing_factor
             self.track_clock_phase[t] = (tonumber(self.track_clock_phase[t]) or 0) + ratio
-            local hits = math.floor(self.track_clock_phase[t])
+            local hits = math.floor(self.track_clock_phase[t] + 1e-9)
             if hits > 0 then
                 self.track_clock_phase[t] = self.track_clock_phase[t] - hits
+                if math.abs(self.track_clock_phase[t]) < 1e-9 then
+                    self.track_clock_phase[t] = 0
+                end
                 total_hits = total_hits + hits
             end
 
@@ -276,6 +283,12 @@ function M.install(App)
                 local should_play = ((step_data and ratio_allows and (not is_tie_step or not self.last_notes[t])) or has_fill)
                 local mute_recorded_once = (not has_fill) and step_data and step_data.source == "manual" and
                     self:consume_recorded_step_skip_once(t, st)
+                local function send_note_on(note, vel, ch, ports)
+                    self:midi_note_on(note, vel, ch, ports)
+                    if self.clock_debug_log_note_on then
+                        self:clock_debug_log_note_on(t, st, note, ch, vel)
+                    end
+                end
 
                 if self.last_notes[t] and not is_tie_step then
                     self:note_off_last_for_track(t)
@@ -302,13 +315,13 @@ function M.install(App)
                         vel = self.fill_patterns[t][st].vel
                         if tc.type == "drum" then
                             local note = clamp(tc.note, 0, 127)
-                            self:midi_note_on(note, self:vel_to_midi(vel), tc.ch, output_ports)
+                            send_note_on(note, self:vel_to_midi(vel), tc.ch, output_ports)
                             self:trigger_crow(t, note)
                             self:schedule_note_off(t, note, tc.ch, note_len_ticks, output_ports)
                             self.last_notes[t] = { note = note, ch = tc.ch, ports = output_ports }
                         else
                             local note = self:get_pitch(t, self.fill_patterns[t][st].pitch, 0, pitch_ctx)
-                            self:midi_note_on(note, self:vel_to_midi(vel), tc.ch, output_ports)
+                            send_note_on(note, self:vel_to_midi(vel), tc.ch, output_ports)
                             self:trigger_crow(t, note)
                             self:schedule_note_off(t, note, tc.ch, note_len_ticks, output_ports)
                             self.last_notes[t] = { note = note, ch = tc.ch, ports = output_ports }
@@ -317,7 +330,7 @@ function M.install(App)
                         vel = step_data.vel
                         if tc.type == "drum" then
                             local note = clamp(tc.note, 0, 127)
-                            self:midi_note_on(note, self:vel_to_midi(vel), tc.ch, output_ports)
+                            send_note_on(note, self:vel_to_midi(vel), tc.ch, output_ports)
                             self:trigger_crow(t, note)
                             self:schedule_note_off(t, note, tc.ch, note_len_ticks, output_ports)
                             self.last_notes[t] = { note = note, ch = tc.ch, ports = output_ports }
@@ -330,7 +343,7 @@ function M.install(App)
                                 chord[#chord + 1] = self:get_pitch(t, d, spice_offset, pitch_ctx)
                             end
                             for _, note in ipairs(chord) do
-                                self:midi_note_on(note, self:vel_to_midi(vel), tc.ch, output_ports)
+                                send_note_on(note, self:vel_to_midi(vel), tc.ch, output_ports)
                                 self:trigger_crow(t, note)
                                 self:schedule_note_off(t, note, tc.ch, note_len_ticks, output_ports)
                                 notes[#notes + 1] = { note = note, ch = tc.ch, ports = output_ports }
@@ -342,7 +355,7 @@ function M.install(App)
                             local sp = self.spice[t] and self.spice[t][st]
                             local spice_offset = sp and sp.current or 0
                             local note = self:get_pitch(t, step_data.pitch, spice_offset, pitch_ctx)
-                            self:midi_note_on(note, self:vel_to_midi(vel), tc.ch, output_ports)
+                            send_note_on(note, self:vel_to_midi(vel), tc.ch, output_ports)
                             self:trigger_crow(t, note)
                             self:schedule_note_off(t, note, tc.ch, note_len_ticks, output_ports)
                             self.last_notes[t] = { note = note, ch = tc.ch, ports = output_ports }
