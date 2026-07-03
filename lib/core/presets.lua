@@ -12,6 +12,7 @@ local ARC_VARIANCE_MODES = H.ARC_VARIANCE_MODES
 local ARC_CADENCE_SHAPES = H.ARC_CADENCE_SHAPES
 local ARC_DELTA_THRESHOLDS = H.ARC_DELTA_THRESHOLDS
 local TRACK_SELECT_MOD = H.TRACK_SELECT_MOD
+local swing_profiles = include("lib/sequencer/swing_profiles")
 
 local M = {}
 
@@ -229,6 +230,7 @@ function M.install(App)
             master_seq_len_enabled = self.master_seq_len_enabled,
             master_seq_len = self.master_seq_len,
             global_swing_percent = self.global_swing_percent,
+            global_swing_profile = self.global_swing_profile,
             follow_page_on_playhead = self.follow_page_on_playhead,
             follow_page_on_playhead_aux_takeover = self.follow_page_on_playhead_aux_takeover,
             follow_page_on_playhead_aux = self.follow_page_on_playhead_aux,
@@ -305,6 +307,11 @@ function M.install(App)
         self.master_seq_len_enabled = not not state.master_seq_len_enabled
         self.master_seq_len = clamp(tonumber(state.master_seq_len) or cfg.DEFAULT_MASTER_SEQ_LEN, 1, cfg.MAX_MASTER_SEQ_LEN)
         self.global_swing_percent = clamp(tonumber(state.global_swing_percent) or self.global_swing_percent or 50, 25, 75)
+        local profile = state.global_swing_profile or self.global_swing_profile or "linear"
+        if not ((swing_profiles.enabled or {})[profile]) then
+            profile = "linear"
+        end
+        self.global_swing_profile = profile
         if state.follow_page_on_playhead ~= nil then
             self.follow_page_on_playhead = not not state.follow_page_on_playhead
         end

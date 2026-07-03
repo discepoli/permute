@@ -96,6 +96,15 @@ function App.new()
     self.follow_page_on_playhead_aux_takeover = false
     self.follow_page_on_playhead_aux = false
     self.global_swing_percent = 50
+    self.global_swing_profile = "mpc1000"
+    self.transport_scheduler_ppqn = 96
+    self.external_clock_smooth = 0.25
+    self.external_clock_tempo_update_interval = 0.25
+    self.external_clock_screen_refresh_interval = 0.25
+    self.external_clock_last_time = nil
+    self.external_clock_bpm_estimate = nil
+    self.external_clock_last_tempo_update = nil
+    self.external_clock_last_screen_refresh_ms = 0
     self.transpose_mode = "semitone"
     self.transpose_takeover_mode = false
     self.transpose_seq_enabled = false
@@ -143,6 +152,7 @@ function App.new()
     self.grid_dirty = true
     self.aux_grid_dirty = true
     self.arc_dirty = true
+    self.prev_menu_active = false
     self.grid_timer = nil
     self.gc_metro = nil
     self.internal_clock_id = nil
@@ -212,6 +222,9 @@ function App.new()
     self.clock_debug_dt_samples = {}
     self.clock_debug_overrun_samples = {}
     self.clock_debug_hist = { [1] = 0, [2] = 0, [3] = 0, [4] = 0, [5] = 0 }
+    self.clock_debug_rate_counts = {}
+    self.clock_debug_rate_start_ms = nil
+    self.clock_debug_rate_last_ms = nil
 
     local track_step_limit = math.max(tonumber(cfg.MAX_STEPS) or cfg.NUM_STEPS, cfg.NUM_STEPS)
     for t = 1, cfg.NUM_TRACKS do

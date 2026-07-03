@@ -209,13 +209,26 @@ function M.install(App)
         self.arc_dirty = true
     end
 
+    function App:request_main_grid_redraw()
+        self.grid_dirty = true
+        if self.clock_debug_enabled and self.clock_debug_count then
+            self:clock_debug_count("grid_dirty", 1)
+        end
+    end
+
     function App:request_aux_redraw()
+        if self.clock_debug_enabled and self.clock_debug_count then
+            self:clock_debug_count("request_aux_redraw", 1)
+        end
         self.aux_grid_dirty = true
     end
 
     function App:request_redraw()
+        if self.clock_debug_enabled and self.clock_debug_count then
+            self:clock_debug_count("request_redraw", 1)
+        end
         self.screen_dirty = true
-        self.grid_dirty = true
+        self:request_main_grid_redraw()
         if not self.playing then self.arc_dirty = true end
     end
 

@@ -1,5 +1,6 @@
 local cfg = include("lib/config")
 local musicutil = require("musicutil")
+local swing_profiles = include("lib/sequencer/swing_profiles")
 
 local M = {}
 
@@ -23,6 +24,10 @@ local DEFAULT_SETUP_BASE_IDS = {
     "permute_master_len_enabled",
     "permute_master_len",
     "permute_follow_page",
+    "permute_follow_page_aux_takeover",
+    "permute_follow_page_aux",
+    "permute_global_swing_profile",
+    "permute_global_swing",
     "permute_reset_timing",
     "permute_ext_clock",
     "permute_send_clock_out",
@@ -130,7 +135,7 @@ function M.setup(app)
     local section_count = 8
     local spacer_count = section_count - 1
     local permute_section_count = (params and params.add_separator) and (section_count + spacer_count) or 0
-    params:add_group("permute_seq", "permute", 45 + permute_section_count)
+    params:add_group("permute_seq", "permute", 46 + permute_section_count)
 
     add_permute_section("permute_section_music", "music")
 
@@ -176,7 +181,11 @@ function M.setup(app)
 
     params:add_number("permute_tempo", "tempo", 30, 300, cfg.DEFAULT_TEMPO_BPM)
     params:set_action("permute_tempo", function(v)
-        app.tempo_bpm = v
+        if app.update_clock_tempo then
+            app:update_clock_tempo(v)
+        else
+            app.tempo_bpm = v
+        end
         params:set("clock_tempo", v)
         app:request_redraw()
     end)
@@ -288,6 +297,27 @@ function M.setup(app)
         app.follow_page_on_playhead_aux = (v == 2)
         app:request_redraw()
         app:request_aux_redraw()
+    end)
+
+    local swing_profile_options = {}
+    local swing_profile_keys = {}
+    for _, key in ipairs(swing_profiles.order or {}) do
+        swing_profile_keys[#swing_profile_keys + 1] = key
+        swing_profile_options[#swing_profile_options + 1] = swing_profiles.labels[key] or key
+    end
+
+    local default_swing_profile_index = 1
+    for i, key in ipairs(swing_profile_keys) do
+        if key == app.global_swing_profile then
+            default_swing_profile_index = i
+            break
+        end
+    end
+
+    params:add_option("permute_global_swing_profile", "swing profile", swing_profile_options, default_swing_profile_index)
+    params:set_action("permute_global_swing_profile", function(v)
+        local idx = clamp(tonumber(v) or default_swing_profile_index, 1, #swing_profile_keys)
+        app.global_swing_profile = swing_profile_keys[idx] or swing_profile_keys[1] or "mpc1000"
     end)
 
     params:add_number("permute_global_swing", "global swing %", 25, 75, 50)

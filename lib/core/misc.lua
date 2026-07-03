@@ -157,17 +157,45 @@ function M.install(App)
         self:load_default_setup(false)
 
         self.grid_timer = metro.init(function()
+            local menu_active = self:is_menu_active()
+            if self.prev_menu_active and not menu_active then
+                self.screen_dirty = true
+            end
+            self.prev_menu_active = menu_active
+
+            if self.status_message and (util.time() or 0) > (tonumber(self.status_message_until) or 0) then
+                self.screen_dirty = true
+            end
+
+            if self.playing and self.use_midi_clock then
+                local now_ms = math.floor((util.time() or 0) * 1000)
+                local interval_ms = math.floor(1000 * (tonumber(self.external_clock_screen_refresh_interval) or 0.25))
+                if now_ms - (tonumber(self.external_clock_last_screen_refresh_ms) or 0) >= interval_ms then
+                    self.screen_dirty = true
+                    self.external_clock_last_screen_refresh_ms = now_ms
+                end
+            end
+
             if self.grid_dirty then
                 self:redraw_main_grid()
                 self.grid_dirty = false
+                if self.clock_debug_enabled and self.clock_debug_count then
+                    self:clock_debug_count("grid_redraw", 1)
+                end
             end
             if self.aux_grid_dirty then
                 self:redraw_aux_grid()
                 self.aux_grid_dirty = false
+                if self.clock_debug_enabled and self.clock_debug_count then
+                    self:clock_debug_count("aux_redraw", 1)
+                end
             end
-            if self.screen_dirty and not self:is_menu_active() then
+            if self.screen_dirty and not menu_active then
                 self:redraw_screen()
                 self.screen_dirty = false
+                if self.clock_debug_enabled and self.clock_debug_count then
+                    self:clock_debug_count("screen_redraw", 1)
+                end
             end
             if self.arc_dirty then
                 self:redraw_arc()

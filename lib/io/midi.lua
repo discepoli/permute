@@ -822,27 +822,41 @@ function M.install(App)
 
         if status == 248 then
             if self.use_midi_clock and self.playing then
+                self:on_external_clock_pulse()
                 self:advance_clock_tick()
-                if self.redraw_deferred then
-                    local now = now_ms()
-                    if now - (self.last_redraw_time or 0) >= self.redraw_min_ms then self:redraw_grid(true) end
-                end
             end
             return
         elseif status == 250 then
             self:reset_playheads()
             self.playing = true
-            self:tick()
+            self:reset_external_clock_sync()
+            self:on_external_clock_pulse()
+            if self.clock_debug_enabled then
+                self:clock_debug_reset_state()
+                self:clock_debug_log(string.format("[%s] start mode=external tempo=%s",
+                    os.date("%H:%M:%S"),
+                    tostring(self.tempo_bpm)))
+            end
             self:request_redraw()
             self:request_aux_redraw()
             return
         elseif status == 251 then
             self.playing = true
+            if self.clock_debug_enabled then
+                self:clock_debug_reset_state()
+                self:clock_debug_log(string.format("[%s] continue mode=external tempo=%s",
+                    os.date("%H:%M:%S"),
+                    tostring(self.tempo_bpm)))
+            end
             self:request_redraw()
             self:request_aux_redraw()
             return
         elseif status == 252 then
             self.playing = false
+            if self.transport_scheduler_id then
+                clock.cancel(self.transport_scheduler_id)
+                self.transport_scheduler_id = nil
+            end
             self:clear_realtime_row_holds()
             self:stop_all_notes()
             self:request_redraw()
@@ -886,7 +900,7 @@ function M.install(App)
         if t == "start" then
             self:reset_playheads()
             self.playing = true
-            self:tick()
+            self:reset_external_clock_sync()
             self:request_redraw()
             self:request_aux_redraw()
         elseif t == "continue" then
@@ -895,6 +909,10 @@ function M.install(App)
             self:request_aux_redraw()
         elseif t == "stop" then
             self.playing = false
+            if self.transport_scheduler_id then
+                clock.cancel(self.transport_scheduler_id)
+                self.transport_scheduler_id = nil
+            end
             self:clear_realtime_row_holds()
             self:stop_all_notes()
             self:request_redraw()

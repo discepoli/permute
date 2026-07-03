@@ -16,6 +16,19 @@ local TRACK_SELECT_MOD = H.TRACK_SELECT_MOD
 local M = {}
 
 function M.install(App)
+    function App:get_display_tempo()
+        if self.use_midi_clock and params and params.get then
+            local ok, tempo = pcall(function() return params:get("clock_tempo") end)
+            tempo = ok and tonumber(tempo) or nil
+            if tempo and tempo > 0 then return tempo end
+        end
+        if self.use_midi_clock then
+            local estimate = tonumber(self.external_clock_bpm_estimate)
+            if estimate and estimate > 0 then return estimate end
+        end
+        return tonumber(self.tempo_bpm) or 120
+    end
+
     function App:get_active_screen_orientation()
         local mode = self.screen_orientation or "normal"
         if params and params.get then
@@ -258,7 +271,7 @@ function M.install(App)
             end
         else
             row("state: " .. (self.playing and "playing" or "stopped"), 10)
-            row("tempo: " .. string.format("%d", self.tempo_bpm), 10)
+            row("tempo: " .. string.format("%d", self:get_display_tempo()), 10)
             row("scale: " .. tostring(self.scale_type), 10)
             local sel = self.sel_track and tostring(self.sel_track) or "-"
             local page = self.sel_track and tostring(self:get_track_main_grid_page(self.sel_track)) or "-"
@@ -381,7 +394,7 @@ function M.install(App)
                 screen.move(0, y2)
                 screen.text("state: " .. (self.playing and "playing" or "stopped"))
                 screen.move(0, y3)
-                screen.text("tempo: " .. string.format("%d", self.tempo_bpm))
+                screen.text("tempo: " .. string.format("%d", self:get_display_tempo()))
                 screen.move(0, y4)
                 screen.text("scale: " .. self.scale_type)
                 screen.move(0, y5)
@@ -399,7 +412,7 @@ function M.install(App)
                 screen.text("state: " .. (self.playing and "playing" or "stopped"))
 
                 screen.move(0, y3)
-                screen.text("tempo: " .. string.format("%d", self.tempo_bpm) .. "  scale: " .. self.scale_type)
+                screen.text("tempo: " .. string.format("%d", self:get_display_tempo()) .. "  scale: " .. self.scale_type)
 
                 screen.move(0, y4)
                 local sel = self.sel_track and tostring(self.sel_track) or "-"
