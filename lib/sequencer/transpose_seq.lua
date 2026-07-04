@@ -81,6 +81,11 @@ function M.install(App)
         self.transpose_seq_hold_start = nil
     end
 
+    function App:reset_transpose_meta_transport()
+        self.transpose_seq_step = 1
+        self.transpose_seq_clock_phase = 0
+    end
+
     function App:apply_transpose_seq_hold_span(start_step, end_step)
         local a = clamp(tonumber(start_step) or 1, 1, cfg.NUM_STEPS)
         local b = clamp(tonumber(end_step) or a, 1, cfg.NUM_STEPS)

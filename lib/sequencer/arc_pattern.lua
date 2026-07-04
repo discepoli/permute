@@ -42,7 +42,7 @@ function M.install(App)
         local tr = self:ensure_track_state(track)
         if not tr then return nil end
         if type(tr.arc) ~= "table" then tr.arc = {} end
-        tr.arc.pulses = clamp(tonumber(tr.arc.pulses) or 0, 0, cfg.NUM_STEPS)
+        tr.arc.pulses = clamp(tonumber(tr.arc.pulses) or 0, 0, self:get_track_step_limit())
         tr.arc.rotation = math.floor(tonumber(tr.arc.rotation) or 1)
         tr.arc.variance = clamp(tonumber(tr.arc.variance) or 0, 0, 100)
         tr.arc.mode = self:normalize_arc_mode(tr.arc.mode)
@@ -57,7 +57,8 @@ function M.install(App)
     end
 
     function App:is_beat_column(step)
-        return step == 1 or step == 5 or step == 9 or step == 13
+        local s = self:clamp_track_step(step, 1)
+        return ((s - 1) % 4) == 0
     end
 
     function App:get_arc_pattern(track)
@@ -185,7 +186,8 @@ function M.install(App)
         local order, active, positions, phase_positions = self:get_arc_pattern(track)
         local cache = {}
 
-        for s = 1, cfg.NUM_STEPS do
+        local step_limit = self:get_track_step_limit()
+        for s = 1, step_limit do
             if tr.gates[s] then
                 cache[s] = {
                     source = "manual",
@@ -203,7 +205,10 @@ function M.install(App)
                 local variance_amount = clamp(tonumber(arc_state.variance) or 0, 0, 100)
                 local variance_depth = math.floor((variance_amount / 100) * 7 + 0.5)
                 local wave = self:get_arc_wave_value(track, pos, len, arc_state.mode)
-                local shift = math.floor((wave * variance_depth) + ((wave >= 0) and 0.5 or -0.5))
+                local shift_raw = wave * variance_depth
+                local shift = (shift_raw >= 0)
+                    and math.floor(shift_raw + 0.5)
+                    or math.ceil(shift_raw - 0.5)
                 local ref_step = self:get_arc_reference_step(track, order, step, tr)
                 local default_vel = self:get_track_default_vel_level(track)
 
@@ -218,10 +223,10 @@ function M.install(App)
                     local chord = {}
                     if type(base_pitch) == "table" then
                         for i, degree in ipairs(base_pitch) do
-                            chord[i] = clamp((tonumber(degree) or 1) + shift, 1, 16)
+                            chord[i] = clamp((tonumber(degree) or 1) + shift, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
                         end
                     else
-                        chord[1] = clamp((tonumber(base_pitch) or 1) + shift, 1, 16)
+                        chord[1] = clamp((tonumber(base_pitch) or 1) + shift, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
                     end
                     if #chord == 0 then chord[1] = 1 end
                     cache[step] = {
@@ -234,7 +239,7 @@ function M.install(App)
                     cache[step] = {
                         source = "arc",
                         vel = ref_step and tr.vels[ref_step] or default_vel,
-                        pitch = clamp((tonumber(base_degree) or 1) + shift, 1, 16)
+                        pitch = clamp((tonumber(base_degree) or 1) + shift, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
                     }
                 end
             end

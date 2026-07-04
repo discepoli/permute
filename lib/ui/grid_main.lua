@@ -50,6 +50,22 @@ function M.install(App)
         end
 
         if z == 1 then
+            if x == TRACK_SELECT_MOD then
+                local now = now_ms()
+                local last_tap = self.mod_last_tap_time[x] or 0
+                if now - last_tap <= self.mod_double_tap_ms then
+                    self.mod_shortcut_consumed[x] = true
+                    self.mod_held[x] = nil
+                    self.mod_last_tap_time[x] = 0
+                    self.track_select_focus_mode = not self.track_select_focus_mode
+                    self:flash_mod_applied(TRACK_SELECT_MOD, self.track_select_focus_mode and "focus on" or "focus off")
+                    self:request_redraw()
+                    self:request_aux_redraw()
+                    return
+                end
+                self.mod_last_tap_time[x] = now
+            end
+
             if x == cfg.MOD.SPICE and self.mod_held[cfg.MOD.SHIFT] then
                 self.mod_shortcut_consumed[x] = true
                 self:flash_mod_applied(cfg.MOD.SPICE, self:undo_last_action() and "undo" or "empty")
@@ -61,6 +77,36 @@ function M.install(App)
                 self.mod_shortcut_consumed[x] = true
                 self:flash_mod_applied(cfg.MOD.BEAT_RPT, self:redo_last_action() and "redo" or "empty")
                 self:request_redraw()
+                return
+            end
+
+            if x == cfg.MOD.TRANSPOSE and self.mod_held[cfg.MOD.SHIFT] then
+                self.mod_shortcut_consumed[x] = true
+                self:toggle_external_midi_record_mode()
+                self:request_redraw()
+                self:request_aux_redraw()
+                return
+            end
+
+            if x == cfg.MOD.END_STEP and self.mod_held[cfg.MOD.SHIFT] then
+                self.mod_shortcut_consumed[x] = true
+                local track = clamp(tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+                self.sel_track = track
+                local ok, new_len = self:lpp_double_track_length(track)
+                self:flash_mod_applied(cfg.MOD.END_STEP, ok and ("x2 " .. tostring(new_len)) or "max")
+                self:request_redraw()
+                self:request_aux_redraw()
+                return
+            end
+
+            if x == cfg.MOD.START and self.mod_held[cfg.MOD.SHIFT] then
+                self.mod_shortcut_consumed[x] = true
+                local track = clamp(tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+                self.sel_track = track
+                local ok, new_len = self:lpp_half_track_length(track)
+                self:flash_mod_applied(cfg.MOD.START, ok and ("1/2 " .. tostring(new_len)) or "min")
+                self:request_redraw()
+                self:request_aux_redraw()
                 return
             end
 
@@ -227,12 +273,29 @@ function M.install(App)
                     self:set_ratio_cycle(x - 8)
                 end
                 applied_value = self:get_ratio_label()
+            elseif self.mod_held[cfg.MOD.OCTAVE] and self.mod_held[cfg.MOD.SHIFT] and self.sel_track then
+                self.track_edit_octave_page[self.sel_track] = clamp(x - 8, -7, 8)
+                applied_value = "edit oct " .. tostring(self.track_edit_octave_page[self.sel_track])
             elseif self.mod_held[cfg.MOD.OCTAVE] and self.sel_track then
                 self.tracks[self.sel_track].octave = x - 8
                 applied_value = tostring(self.tracks[self.sel_track].octave)
             elseif self.mod_held[cfg.MOD.TRANSPOSE] and self.sel_track then
                 self.track_transpose[self.sel_track] = x - 8
                 applied_value = tostring(self.track_transpose[self.sel_track])
+            elseif self.mod_held[cfg.MOD.START] and not self.mod_held[cfg.MOD.END_STEP] and not self.speed_mode and self.sel_track then
+                local max_pages = self:get_track_max_pages()
+                if x <= max_pages then
+                    local page = self:set_track_view_page(self.sel_track, x)
+                    self:set_track_aux_page(self.sel_track, page)
+                    applied_value = "page " .. tostring(page)
+                end
+            elseif self.mod_held[cfg.MOD.END_STEP] and not self.mod_held[cfg.MOD.START] and not self.speed_mode and self.sel_track then
+                local max_pages = self:get_track_max_pages()
+                if x <= max_pages then
+                    local page = self:set_track_view_page(self.sel_track, x)
+                    self:set_track_aux_page(self.sel_track, page)
+                    applied_value = "page " .. tostring(page)
+                end
             elseif self.mod_held[cfg.MOD.RAND_NOTES] and not self.mod_held[cfg.MOD.RAND_STEPS] and self.sel_track then
                 self:apply_random_notes(self.sel_track, x)
                 self.rand_notes_rolled = true
@@ -429,11 +492,16 @@ function M.install(App)
         end
 
         if self.mod_held[cfg.MOD.OCTAVE] and self.sel_track then
-            local oct = self.tracks[self.sel_track].octave
+            local oct = self.mod_held[cfg.MOD.SHIFT]
+                and self:get_track_edit_octave_page(self.sel_track)
+                or self.tracks[self.sel_track].octave
+            local base_oct = self.tracks[self.sel_track].octave
             for x = 1, 16 do
                 local o = x - 8
                 if o == oct then
                     self:grid_led_main(x, dyn_row, 15)
+                elseif self.mod_held[cfg.MOD.SHIFT] and o == base_oct then
+                    self:grid_led_main(x, dyn_row, 5)
                 elseif x == 8 then
                     self:grid_led_main(x, dyn_row, 5)
                 else
@@ -454,6 +522,42 @@ function M.install(App)
                 else
                     self:grid_led_main(x, dyn_row, 2)
                 end
+            end
+            return
+        end
+
+        if self.mod_held[cfg.MOD.START] and not self.mod_held[cfg.MOD.END_STEP] and not self.speed_mode and self.sel_track then
+            local t = clamp(tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+            local tr = self:ensure_track_state(t)
+            local start_page = self:track_step_to_page(tr.start_step)
+            local current_page = self:get_track_view_page(t)
+            local max_pages = self:get_track_max_pages()
+            for x = 1, 16 do
+                local lv = 0
+                if x <= max_pages then
+                    lv = 2
+                    if x == start_page then lv = 8 end
+                    if x == current_page then lv = 15 end
+                end
+                if lv > 0 then self:grid_led_main(x, dyn_row, lv) end
+            end
+            return
+        end
+
+        if self.mod_held[cfg.MOD.END_STEP] and not self.mod_held[cfg.MOD.START] and not self.speed_mode and self.sel_track then
+            local t = clamp(tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+            local tr = self:ensure_track_state(t)
+            local end_page = self:track_step_to_page(tr.end_step)
+            local current_page = self:get_track_view_page(t)
+            local max_pages = self:get_track_max_pages()
+            for x = 1, 16 do
+                local lv = 0
+                if x <= max_pages then
+                    lv = 2
+                    if x == end_page then lv = 8 end
+                    if x == current_page then lv = 15 end
+                end
+                if lv > 0 then self:grid_led_main(x, dyn_row, lv) end
             end
             return
         end
@@ -587,8 +691,12 @@ function M.install(App)
             local lv = 0
             if self:mod_active(x) then
                 lv = 15
+            elseif x == TRACK_SELECT_MOD and self.track_select_focus_mode then
+                lv = 15
             elseif x == cfg.MOD.TAKEOVER then
                 lv = self.realtime_play_mode and 12 or (self.takeover_mode and 15 or 3)
+            elseif x == cfg.MOD.TRANSPOSE and self.external_midi_record_mode then
+                lv = 12
             elseif x == cfg.MOD.BEAT_RPT then
                 lv = (tonumber(self.beat_repeat_len) or 0) > 0 and 10 or 3
             elseif x == cfg.MOD.SHIFT or x == cfg.MOD.CLEAR then
@@ -609,15 +717,17 @@ function M.install(App)
         local takeover_rows = self:get_main_takeover_note_rows()
 
         local lo, hi = self:get_track_bounds(tr)
+        local view_page = self:get_track_view_page(self.sel_track)
 
         if tc.type == "drum" then
-            for s = 1, cfg.NUM_STEPS do
+            for col = 1, cfg.NUM_STEPS do
+                local s = self:get_track_visible_step(self.sel_track, col, view_page)
                 local in_range = s >= lo and s <= hi
                 local fill = fills[s]
                 local step_data = step_cache[s]
                 if in_range and self:is_beat_column(s) then
                     for row = 1, takeover_rows do
-                        self:grid_led_main(s, row, 2)
+                        self:grid_led_main(col, row, 2)
                     end
                 end
                 if step_data then
@@ -627,38 +737,40 @@ function M.install(App)
                         or ((s == current_step and self.playing) and 11 or 7)
                     if not in_range then lv = math.floor(lv / 2) end
                     for row = top_row, takeover_rows do
-                        self:grid_led_main(s, row, lv)
+                        self:grid_led_main(col, row, lv)
                     end
                 elseif fill then
                     local row = self:vel_level_to_main_takeover_row(fill.vel)
                     local lv = (s == current_step and self.playing) and 12 or 6
                     if not in_range then lv = math.floor(lv / 2) end
-                    self:grid_led_main(s, row, lv)
-                    self:grid_led_main(s, takeover_rows, math.max((s == current_step and self.playing) and 4 or 1, 3))
+                    self:grid_led_main(col, row, lv)
+                    self:grid_led_main(col, takeover_rows, math.max((s == current_step and self.playing) and 4 or 1, 3))
                 else
                     if s == current_step and self.playing then
-                        self:grid_led_main(s, takeover_rows, 4)
+                        self:grid_led_main(col, takeover_rows, 4)
                     elseif in_range then
                         self
-                            :grid_led(s, takeover_rows, 1)
+                            :grid_led(col, takeover_rows, 1)
                     end
                 end
             end
         else
             local scale = cfg.SCALES[self.scale_type] or cfg.SCALES.chromatic
-            for s = 1, cfg.NUM_STEPS do
+            local visible_degree_min, visible_degree_max = self:get_visible_degree_window(self.sel_track, "takeover")
+            for col = 1, cfg.NUM_STEPS do
+                local s = self:get_track_visible_step(self.sel_track, col, view_page)
                 local is_playhead = (s == current_step and self.playing)
                 local in_range = s >= lo and s <= hi
                 local fill = fills[s]
-                local fill_degree = fill and clamp(tonumber(fill.pitch) or 1, 1, takeover_rows) or nil
+                local fill_degree = fill and clamp(tonumber(fill.pitch) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE) or nil
                 local step_data = step_cache[s]
                 if (not self.realtime_play_mode) and in_range and self:is_beat_column(s) then
                     for row = 1, takeover_rows do
-                        self:grid_led_main(s, row, 2)
+                        self:grid_led_main(col, row, 2)
                     end
                 end
                 for row = 1, takeover_rows do
-                    local degree = self:main_takeover_row_to_degree(row)
+                    local degree = self:main_takeover_row_to_degree(row, self.sel_track)
                     local is_root = ((degree - 1) % #scale) == 0
                     local is_on = false
                     local is_fill = false
@@ -667,7 +779,7 @@ function M.install(App)
                             is_on = self:poly_has_pitch(step_data.pitch, degree)
                         else
                             is_on = clamp(
-                                tonumber(step_data.pitch) or 1, 1, takeover_rows) == degree
+                                tonumber(step_data.pitch) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE) == degree
                         end
                     elseif fill_degree then
                         is_fill = degree == fill_degree
@@ -676,16 +788,46 @@ function M.install(App)
                         local manual = step_data.source == "manual"
                         local lv = manual and (is_playhead and 15 or 12) or (is_playhead and 11 or 7)
                         if not in_range then lv = math.floor(lv / 2) end
-                        self:grid_led_main(s, row, lv)
+                        self:grid_led_main(col, row, lv)
                     elseif is_fill then
                         local lv = is_playhead and 12 or 6
                         if not in_range then lv = math.floor(lv / 2) end
-                        self:grid_led_main(s, row, lv)
+                        self:grid_led_main(col, row, lv)
                     elseif is_root and in_range then
-                        self:grid_led_main(s, row, 2)
+                        self:grid_led_main(col, row, 2)
                     elseif is_playhead then
-                        self:grid_led_main(s, row, 1)
+                        self:grid_led_main(col, row, 1)
                     end
+                end
+
+                local out_above = false
+                local out_below = false
+                if step_data then
+                    if tc.type == "poly" then
+                        for _, d in ipairs(step_data.pitch or {}) do
+                            local sd = clamp(tonumber(d) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
+                            if sd > visible_degree_max then out_above = true end
+                            if sd < visible_degree_min then out_below = true end
+                        end
+                    else
+                        local sd = clamp(tonumber(step_data.pitch) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
+                        out_above = sd > visible_degree_max
+                        out_below = sd < visible_degree_min
+                    end
+                elseif fill_degree then
+                    out_above = fill_degree > visible_degree_max
+                    out_below = fill_degree < visible_degree_min
+                end
+
+                if out_above then
+                    local lv = is_playhead and 5 or 3
+                    if not in_range then lv = math.max(1, math.floor(lv / 2)) end
+                    self:grid_led_main(col, 1, lv)
+                end
+                if out_below then
+                    local lv = is_playhead and 5 or 3
+                    if not in_range then lv = math.max(1, math.floor(lv / 2)) end
+                    self:grid_led_main(col, takeover_rows, lv)
                 end
             end
         end
@@ -720,8 +862,13 @@ function M.install(App)
                 local step_cache = self:build_arc_step_cache(t, tr, tc)
                 local track_playhead = self:get_track_step(t)
                 local lo, hi = self:get_track_bounds(tr)
+                local view_page = self:get_track_main_grid_page(t)
+                if (self.mod_held[cfg.MOD.START] or self.mod_held[cfg.MOD.END_STEP]) and not self.speed_mode then
+                    view_page = self:get_track_view_page(self.sel_track or t)
+                end
 
-                for s = 1, cfg.NUM_STEPS do
+                for col = 1, cfg.NUM_STEPS do
+                    local s = self:get_track_visible_step(t, col, view_page)
                     local lv = 0
                     local is_playhead = (s == track_playhead and self.playing)
                     local in_range = (s >= lo and s <= hi)
@@ -731,7 +878,7 @@ function M.install(App)
 
                     if self.realtime_play_mode and tc.type ~= "drum" and (((s - 1) % scale_len) == 0) then
                         lv = 2
-                    elseif (not self.realtime_play_mode) and (s == 1 or s == 5 or s == 9 or s == 13) then
+                    elseif (not self.realtime_play_mode) and self:is_beat_column(s) then
                         lv = 2
                     end
                     if has_manual then
@@ -753,7 +900,7 @@ function M.install(App)
                         if in_range then lv = math.max(lv + 2, 6) else lv = math.max(lv, 3) end
                     end
 
-                    if lv > 0 then dev:led(s, y, lv) end
+                    if lv > 0 then dev:led(col, y, lv) end
                 end
             end
             self:draw_dynamic_row()

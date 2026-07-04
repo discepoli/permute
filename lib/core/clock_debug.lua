@@ -1,5 +1,6 @@
 local H = include("lib/core/util")
 local ensure_dir = H.ensure_dir
+local cfg = H.cfg
 
 local M = {}
 
@@ -28,6 +29,10 @@ function M.install(App)
         self.clock_debug_dt_samples = {}
         self.clock_debug_overrun_samples = {}
         self.clock_debug_hist = { [1] = 0, [2] = 0, [3] = 0, [4] = 0, [5] = 0 }
+        self.clock_debug_rate_counts = {}
+        local now = ((util and util.time and util.time()) or 0) * 1000
+        self.clock_debug_rate_start_ms = now
+        self.clock_debug_rate_last_ms = now
     end
 
     function App:clock_debug_log(line)
@@ -38,6 +43,47 @@ function M.install(App)
         if #b > 2000 then
             table.remove(b, 1)
         end
+    end
+
+    function App:clock_debug_log_note_on(track, step, note, ch, vel)
+        if not self.clock_debug_enabled or not self.clock_debug_note_events then return end
+        local tick = tonumber(self.transport_clock) or 0
+        local step_ticks = tonumber(cfg.MIDI_CLOCK_TICKS_PER_STEP) or 6
+        local beat_ticks = step_ticks * 4
+        self:clock_debug_log(string.format(
+            "[%s] note_on tick=%.3f step_mod=%.3f beat_mod=%.3f track=%d counter=%d step=%d note=%d ch=%d vel=%d swing=%d profile=%s tempo=%.3f ext_bpm=%.3f int_ppqn=%d ext_in_ppqn=%d interp_ppqn=%d",
+            os.date("%H:%M:%S"),
+            tick,
+            tick % step_ticks,
+            tick % beat_ticks,
+            tonumber(track) or 0,
+            tonumber((self.track_steps or {})[track]) or 0,
+            tonumber(step) or 0,
+            tonumber(note) or 0,
+            tonumber(ch) or 0,
+            tonumber(vel) or 0,
+            tonumber(self.global_swing_percent) or 50,
+            tostring(self.global_swing_profile or "linear"),
+            tonumber(self.tempo_bpm) or 0,
+            tonumber(self.external_clock_bpm_estimate) or 0,
+            tonumber(self.transport_scheduler_ppqn) or 0,
+            tonumber(self.external_clock_input_ppqn) or 24,
+            tonumber(self.external_clock_interpolation_ppqn) or 24))
+    end
+
+    function App:clock_debug_log_setting(name, value)
+        if not self.clock_debug_enabled then return end
+        self:clock_debug_log(string.format(
+            "[%s] setting %s=%s tempo=%.3f swing=%d profile=%s int_ppqn=%d ext_in_ppqn=%d interp_ppqn=%d",
+            os.date("%H:%M:%S"),
+            tostring(name or ""),
+            tostring(value or ""),
+            tonumber(self.tempo_bpm) or 0,
+            tonumber(self.global_swing_percent) or 50,
+            tostring(self.global_swing_profile or "linear"),
+            tonumber(self.transport_scheduler_ppqn) or 0,
+            tonumber(self.external_clock_input_ppqn) or 24,
+            tonumber(self.external_clock_interpolation_ppqn) or 24))
     end
 
     function App:_clock_debug_flush()
@@ -51,10 +97,19 @@ function M.install(App)
 
     function App:clock_debug_on_tick_start(t_start)
         self.clock_debug_tick_count = (tonumber(self.clock_debug_tick_count) or 0) + 1
+        if self.clock_debug_count then
+            self:clock_debug_count("transport", 1)
+        end
         local prev = self.clock_debug_prev_internal_ms
         if prev then
             local dt = t_start - prev
-            local expected = 60000 / ((tonumber(self.tempo_bpm) or 120) * 24)
+            local ext_input_ppqn = math.max(tonumber(self.external_clock_input_ppqn) or 24, 24)
+            local ppqn = self.use_midi_clock
+                and math.max(tonumber(self.external_clock_interpolation_ppqn) or ext_input_ppqn, ext_input_ppqn)
+                or math.max(tonumber(self.transport_scheduler_ppqn) or 24, 24)
+            local bpm = (self.use_midi_clock and tonumber(self.external_clock_bpm_estimate)) or
+                tonumber(self.tempo_bpm) or 120
+            local expected = 60000 / (bpm * ppqn)
             local thr = tonumber(self.clock_debug_threshold_ms) or 2
             local delta = dt - expected
             local dt_samples = self.clock_debug_dt_samples or {}
@@ -67,6 +122,43 @@ function M.install(App)
             end
         end
         self.clock_debug_prev_internal_ms = t_start
+    end
+
+    function App:clock_debug_count(name, amount)
+        if not self.clock_debug_enabled then return end
+        local counts = self.clock_debug_rate_counts or {}
+        counts[name] = (tonumber(counts[name]) or 0) + (tonumber(amount) or 1)
+        self.clock_debug_rate_counts = counts
+    end
+
+    function App:clock_debug_maybe_write_rates(now_ms)
+        if not self.clock_debug_enabled then return end
+        local now = tonumber(now_ms) or (((util and util.time and util.time()) or 0) * 1000)
+        local start = tonumber(self.clock_debug_rate_start_ms) or now
+        local elapsed = (now - start) / 1000
+        if elapsed < 5 then return end
+
+        local c = self.clock_debug_rate_counts or {}
+        local function rate(name)
+            return (tonumber(c[name]) or 0) / math.max(elapsed, 0.001)
+        end
+
+        self:clock_debug_log(string.format(
+            "[%s] rates transport=%.1f/s boundaries=%.1f/s hits=%.1f/s grid_redraw=%.1f/s aux_redraw=%.1f/s screen_redraw=%.1f/s request_redraw=%.1f/s request_aux_redraw=%.1f/s grid_dirty=%.1f/s",
+            os.date("%H:%M:%S"),
+            rate("transport"),
+            rate("boundaries"),
+            rate("track_hits"),
+            rate("grid_redraw"),
+            rate("aux_redraw"),
+            rate("screen_redraw"),
+            rate("request_redraw"),
+            rate("request_aux_redraw"),
+            rate("grid_dirty")))
+
+        self.clock_debug_rate_counts = {}
+        self.clock_debug_rate_start_ms = now
+        self.clock_debug_rate_last_ms = now
     end
 
     function App:clock_debug_on_tick_end(total_ms)
@@ -96,6 +188,7 @@ function M.install(App)
     end
 
     function App:clock_debug_write_summary()
+        self:clock_debug_maybe_write_rates(((util and util.time and util.time()) or 0) * 1000)
         local ticks = tonumber(self.clock_debug_tick_count) or 0
         local overruns = tonumber(self.clock_debug_overrun_count) or 0
         local dt_sorted = copy_sorted(self.clock_debug_dt_samples)
@@ -126,9 +219,9 @@ function M.install(App)
     function App:set_clock_debug_enabled(enabled)
         local next_enabled = not not enabled
         if self.clock_debug_enabled == next_enabled then return end
-        self.clock_debug_enabled = next_enabled
 
         if next_enabled then
+            self.clock_debug_enabled = true
             ensure_dir(self:preset_dir())
             local stamp = os.date("%Y%m%d-%H%M%S")
             self.clock_debug_log_path = self:preset_dir() .. "clock-debug-" .. stamp .. ".log"
@@ -158,6 +251,7 @@ function M.install(App)
         end
         self.clock_debug_log_handle = nil
         self.clock_debug_buffer = nil
+        self.clock_debug_enabled = false
     end
 end
 

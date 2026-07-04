@@ -1,5 +1,6 @@
 local cfg = include("lib/config")
 local musicutil = require("musicutil")
+local swing_profiles = include("lib/sequencer/swing_profiles")
 
 local M = {}
 
@@ -8,6 +9,7 @@ local TRACK_TYPES = { "drum", "mono", "poly" }
 local BEAT_REPEAT_MODES = { "full-row", "one-handed", "step-select" }
 local TRANSPOSE_MODES = { "semitone", "scale degree" }
 local RESET_TIMING_OPTIONS = { "instant", "next beat" }
+local LPP_COLOR_ZONES = { "zone_b", "zone_c", "zone_d", "zone_e" }
 local SCALE_DEGREE_LABELS = {
     diatonic = { "I", "ii", "iii", "IV", "V", "vi", "vii" },
     pentatonic = { "I", "ii", "iii", "V", "vi" },
@@ -21,15 +23,48 @@ local DEFAULT_SETUP_BASE_IDS = {
     "permute_tempo",
     "permute_master_len_enabled",
     "permute_master_len",
+    "permute_follow_page",
+    "permute_follow_page_aux_takeover",
+    "permute_follow_page_aux",
+    "permute_global_swing_profile",
+    "permute_global_swing",
     "permute_reset_timing",
     "permute_ext_clock",
+    "permute_ext_clock_input_ppqn",
+    "permute_ext_clock_ppqn",
     "permute_send_clock_out",
     "permute_send_start_stop_out",
     "permute_clock_debug",
+    "permute_clock_debug_notes",
     "permute_midi_out",
     "permute_midi_out_2",
     "permute_midi_out_3",
     "permute_midi_out_4",
+    "permute_midi_in",
+    "permute_midi_in_2",
+    "permute_midi_in_auto_ch",
+    "permute_lpp_enable",
+    "permute_lpp_input_port",
+    "permute_lpp_auto_programmer",
+    "permute_lpp_led_feedback",
+    "permute_lpp_zone_b_octave_color",
+    "permute_lpp_zone_b_note_color",
+    "permute_lpp_zone_c_octave_color",
+    "permute_lpp_zone_c_note_color",
+    "permute_lpp_zone_d_octave_color",
+    "permute_lpp_zone_d_note_color",
+    "permute_lpp_zone_e_octave_color",
+    "permute_lpp_zone_e_note_color",
+    "permute_lpp_clear_button_mapped_color",
+    "permute_lpp_clear_button_unmapped_color",
+    "permute_lpp_drum_track_1_color",
+    "permute_lpp_drum_track_2_color",
+    "permute_lpp_drum_track_3_color",
+    "permute_lpp_drum_track_4_color",
+    "permute_lpp_drum_track_5_color",
+    "permute_lpp_drum_track_6_color",
+    "permute_lpp_drum_track_7_color",
+    "permute_lpp_drum_track_8_color",
     "permute_melody_gate_ticks",
     "permute_drum_gate_ticks",
     "permute_spice_accum_min",
@@ -71,12 +106,41 @@ local function scale_degree_label(scale_type, idx)
     return labels[clamp(idx, 1, #labels)] or labels[1]
 end
 
+local function add_permute_spacer(id)
+    if params and params.add_separator and params.add_number then
+        params:add_number(id, "", 0, 0, 0, function()
+            return ""
+        end)
+        if params.set_save then
+            params:set_save(id, false)
+        end
+        if params.lookup_param then
+            local p = params:lookup_param(id)
+            if p then p.allow_pmap = false end
+        end
+    end
+end
+
+local function add_permute_section(id, label, add_spacer_before)
+    if params and params.add_separator then
+        if add_spacer_before then
+            add_permute_spacer(id .. "_spacer")
+        end
+        params:add_separator(id, label)
+    end
+end
+
 function M.setup(app)
     local prev_action_write = params.action_write
     local prev_action_read = params.action_read
     local prev_action_delete = params.action_delete
 
-    params:add_group("permute_seq", "permute", 38)
+    local section_count = 8
+    local spacer_count = section_count - 1
+    local permute_section_count = (params and params.add_separator) and (section_count + spacer_count) or 0
+    params:add_group("permute_seq", "permute", 49 + permute_section_count)
+
+    add_permute_section("permute_section_music", "music")
 
     params:add_option("permute_scale", "scale", SCALE_NAMES, 2)
     params:set_action("permute_scale", function(v)
@@ -116,10 +180,19 @@ function M.setup(app)
         end
     end)
 
+    add_permute_section("permute_section_transport", "transport", true)
+
     params:add_number("permute_tempo", "tempo", 30, 300, cfg.DEFAULT_TEMPO_BPM)
     params:set_action("permute_tempo", function(v)
-        app.tempo_bpm = v
+        if app.update_clock_tempo then
+            app:update_clock_tempo(v)
+        else
+            app.tempo_bpm = v
+        end
         params:set("clock_tempo", v)
+        if app.clock_debug_log_setting then
+            app:clock_debug_log_setting("tempo", tonumber(v) or cfg.DEFAULT_TEMPO_BPM)
+        end
         app:request_redraw()
     end)
 
@@ -145,6 +218,8 @@ function M.setup(app)
         app:request_redraw()
     end)
 
+    add_permute_section("permute_section_clock_midi", "clock + midi", true)
+
     params:add_option("permute_ext_clock", "external midi clock", { "off", "on" }, 1)
     params:set_action("permute_ext_clock", function(v)
         app.use_midi_clock = (v == 2)
@@ -155,6 +230,28 @@ function M.setup(app)
                 os.date("%H:%M:%S"),
                 app.use_midi_clock and "external" or "internal"))
         end
+    end)
+
+    local ext_clock_input_ppqn_values = { 24, 48, 96, 192 }
+    params:add_option("permute_ext_clock_input_ppqn", "incoming clock ppqn", { "24", "48", "96", "192" }, 1)
+    params:set_action("permute_ext_clock_input_ppqn", function(v)
+        local idx = clamp(tonumber(v) or 1, 1, #ext_clock_input_ppqn_values)
+        app.external_clock_input_ppqn = ext_clock_input_ppqn_values[idx] or 24
+        if app.clock_debug_log_setting then
+            app:clock_debug_log_setting("incoming_clock_ppqn", app.external_clock_input_ppqn)
+        end
+        app:reset_external_clock_sync()
+    end)
+
+    local ext_clock_ppqn_values = { 24, 48, 96, 192 }
+    params:add_option("permute_ext_clock_ppqn", "interp clock ppqn", { "24", "48", "96", "192" }, 3)
+    params:set_action("permute_ext_clock_ppqn", function(v)
+        local idx = clamp(tonumber(v) or 3, 1, #ext_clock_ppqn_values)
+        app.external_clock_interpolation_ppqn = ext_clock_ppqn_values[idx] or 96
+        if app.clock_debug_log_setting then
+            app:clock_debug_log_setting("interp_clock_ppqn", app.external_clock_interpolation_ppqn)
+        end
+        app:reset_external_clock_sync()
     end)
 
     params:add_option("permute_send_clock_out", "send midi clock out", { "off", "on" }, 2)
@@ -170,6 +267,11 @@ function M.setup(app)
     params:add_option("permute_clock_debug", "clock debug", { "off", "on" }, 1)
     params:set_action("permute_clock_debug", function(v)
         app:set_clock_debug_enabled(v == 2)
+    end)
+
+    params:add_option("permute_clock_debug_notes", "note timing log", { "off", "on" }, 1)
+    params:set_action("permute_clock_debug_notes", function(v)
+        app.clock_debug_note_events = (v == 2)
     end)
 
     params:add_option("permute_midi_out", "midi out port", midi_port_options(), 1)
@@ -191,6 +293,114 @@ function M.setup(app)
     params:set_action("permute_midi_out_4", function()
         app:connect_midi_from_params()
     end)
+
+    params:add_option("permute_midi_in", "midi in port", midi_port_options(true), 1)
+    params:set_action("permute_midi_in", function()
+        app:connect_midi_from_params()
+    end)
+
+    params:add_option("permute_midi_in_2", "midi in port 2", midi_port_options(true), 1)
+    params:set_action("permute_midi_in_2", function()
+        app:connect_midi_from_params()
+    end)
+
+    params:add_number("permute_midi_in_auto_ch", "midi in auto channel", 1, 16, 16)
+    params:set_action("permute_midi_in_auto_ch", function(v)
+        app.midi_in_auto_channel = clamp(tonumber(v) or 16, 1, 16)
+    end)
+
+    add_permute_section("permute_section_playback_modes", "playback behavior", true)
+
+    params:add_option("permute_follow_page", "follow main page", { "off", "on" }, 1)
+    params:set_action("permute_follow_page", function(v)
+        app.follow_page_on_playhead = (v == 2)
+        app:request_redraw()
+        app:request_aux_redraw()
+    end)
+
+    params:add_option("permute_follow_page_aux_takeover", "follow edit page", { "off", "on" }, 1)
+    params:set_action("permute_follow_page_aux_takeover", function(v)
+        app.follow_page_on_playhead_aux_takeover = (v == 2)
+        app:request_redraw()
+        app:request_aux_redraw()
+    end)
+
+    params:add_option("permute_follow_page_aux", "follow aux page", { "off", "on" }, 1)
+    params:set_action("permute_follow_page_aux", function(v)
+        app.follow_page_on_playhead_aux = (v == 2)
+        app:request_redraw()
+        app:request_aux_redraw()
+    end)
+
+    local swing_profile_options = {}
+    local swing_profile_keys = {}
+    for _, key in ipairs(swing_profiles.order or {}) do
+        swing_profile_keys[#swing_profile_keys + 1] = key
+        swing_profile_options[#swing_profile_options + 1] = swing_profiles.labels[key] or key
+    end
+
+    local default_swing_profile_index = 1
+    for i, key in ipairs(swing_profile_keys) do
+        if key == app.global_swing_profile then
+            default_swing_profile_index = i
+            break
+        end
+    end
+
+    params:add_option("permute_global_swing_profile", "swing profile", swing_profile_options, default_swing_profile_index)
+    params:set_action("permute_global_swing_profile", function(v)
+        local idx = clamp(tonumber(v) or default_swing_profile_index, 1, #swing_profile_keys)
+        app.global_swing_profile = swing_profile_keys[idx] or swing_profile_keys[1] or "mpc1000"
+        if app.clock_debug_log_setting then
+            app:clock_debug_log_setting("swing_profile", app.global_swing_profile)
+        end
+    end)
+
+    params:add_number("permute_global_swing", "global swing %", 25, 75, 50)
+    params:set_action("permute_global_swing", function(v)
+        app.global_swing_percent = clamp(tonumber(v) or 50, 25, 75)
+        if app.clock_debug_log_setting then
+            app:clock_debug_log_setting("swing_percent", app.global_swing_percent)
+        end
+    end)
+
+    params:add_option("permute_beat_repeat_mode", "b. repeat mode", BEAT_REPEAT_MODES, 1)
+    params:set_action("permute_beat_repeat_mode", function(v)
+        app.beat_repeat_mode = BEAT_REPEAT_MODES[v] or BEAT_REPEAT_MODES[1]
+        app.beat_repeat_len = 0
+        app.beat_repeat_excluded = {}
+        if app.reset_step_select_repeat then app:reset_step_select_repeat() end
+        app:request_redraw()
+        app:request_aux_redraw()
+    end)
+
+    params:add_option("permute_beat_repeat_direction", "b. repeat direction", { "l->r", "l<-r" }, 1)
+    params:set_action("permute_beat_repeat_direction", function(v)
+        app.beat_repeat_direction = (v == 2) and "l<-r" or "l->r"
+        app:request_redraw()
+        app:request_aux_redraw()
+    end)
+
+    params:add_option("permute_transpose_mode", "transpose mode", TRANSPOSE_MODES, 1)
+    params:set_action("permute_transpose_mode", function(v)
+        app.transpose_mode = TRANSPOSE_MODES[v] or TRANSPOSE_MODES[1]
+        app:request_redraw()
+        app:request_aux_redraw()
+    end)
+
+    params:add_option("permute_temp_button_mode", "temp button mode", { "temp", "fill" }, 1)
+    params:set_action("permute_temp_button_mode", function(v)
+        app.temp_button_mode = (v == 2) and "fill" or "temp"
+        app.temp_latched = false
+        app.fill_latched = false
+        app.fill_active = false
+        app.fill_applied = false
+        app.temp_steps = {}
+        app:request_redraw()
+        app:request_aux_redraw()
+    end)
+
+    add_permute_section("permute_section_note_shaping", "note shaping", true)
 
     params:add_number("permute_melody_gate_ticks", "melody gate ticks", 1, 24, 5)
     params:set_action("permute_melody_gate_ticks", function(v)
@@ -232,6 +442,8 @@ function M.setup(app)
         app:set_spice_accum_bounds(min_v, v)
     end)
 
+    add_permute_section("permute_section_outputs_display", "outputs + display", true)
+
     params:add_option("permute_crow_enabled", "crow enabled", { "off", "on" }, 1)
     params:set_action("permute_crow_enabled", function(v)
         app.crow_enabled = (v == 2)
@@ -259,41 +471,7 @@ function M.setup(app)
         app:request_redraw()
     end)
 
-    params:add_option("permute_beat_repeat_mode", "b. repeat mode", BEAT_REPEAT_MODES, 1)
-    params:set_action("permute_beat_repeat_mode", function(v)
-        app.beat_repeat_mode = BEAT_REPEAT_MODES[v] or BEAT_REPEAT_MODES[1]
-        app.beat_repeat_len = 0
-        app.beat_repeat_excluded = {}
-        if app.reset_step_select_repeat then app:reset_step_select_repeat() end
-        app:request_redraw()
-        app:request_aux_redraw()
-    end)
-
-    params:add_option("permute_beat_repeat_direction", "b. repeat direction", { "l->r", "l<-r" }, 1)
-    params:set_action("permute_beat_repeat_direction", function(v)
-        app.beat_repeat_direction = (v == 2) and "l<-r" or "l->r"
-        app:request_redraw()
-        app:request_aux_redraw()
-    end)
-
-    params:add_option("permute_transpose_mode", "transpose mode", TRANSPOSE_MODES, 1)
-    params:set_action("permute_transpose_mode", function(v)
-        app.transpose_mode = TRANSPOSE_MODES[v] or TRANSPOSE_MODES[1]
-        app:request_redraw()
-        app:request_aux_redraw()
-    end)
-
-    params:add_option("permute_temp_button_mode", "temp button mode", { "temp", "fill" }, 1)
-    params:set_action("permute_temp_button_mode", function(v)
-        app.temp_button_mode = (v == 2) and "fill" or "temp"
-        app.temp_latched = false
-        app.fill_latched = false
-        app.fill_active = false
-        app.fill_applied = false
-        app.temp_steps = {}
-        app:request_redraw()
-        app:request_aux_redraw()
-    end)
+    add_permute_section("permute_section_arc_controls", "arc controls", true)
 
     params:add_number("permute_arc_k1_threshold", "arc k1 threshold", 1, 32, 8)
     params:set_action("permute_arc_k1_threshold", function(v)
@@ -314,6 +492,8 @@ function M.setup(app)
     params:set_action("permute_arc_k4_threshold", function(v)
         app.arc_delta_thresholds[4] = clamp(tonumber(v) or 16, 1, 32)
     end)
+
+    add_permute_section("permute_section_actions", "actions", true)
 
     params:add_trigger("permute_panic", "panic")
     params:set_action("permute_panic", function()
@@ -398,6 +578,79 @@ function M.setup(app)
         params:add_option(gid .. "_hold_tie_len", "hold tie length", { "off", "on" }, app.track_hold_tie_len_enabled[track] and 2 or 1)
         params:set_action(gid .. "_hold_tie_len", function(v)
             app.track_hold_tie_len_enabled[track] = (v == 2)
+        end)
+    end
+
+    params:add_group("permute_lpp_integration", "lpp integration", 22)
+
+    params:add_option("permute_lpp_enable", "lpp integration", { "off", "on" }, 1)
+    params:set_action("permute_lpp_enable", function(v)
+        app.lpp_enabled = (v == 2)
+        app:connect_midi_from_params()
+    end)
+
+    params:add_option("permute_lpp_input_port", "lpp midi in port", midi_port_options(true), 1)
+    params:set_action("permute_lpp_input_port", function(v)
+        app.lpp_input_port = clamp((tonumber(v) or 1) - 1, 0, 16)
+        app:connect_midi_from_params()
+    end)
+
+    params:add_option("permute_lpp_auto_programmer", "lpp auto programmer", { "off", "on" }, 1)
+    params:set_action("permute_lpp_auto_programmer", function(v)
+        app.lpp_programmer_auto_enter = (v == 2)
+        app:connect_midi_from_params()
+    end)
+
+    params:add_option("permute_lpp_led_feedback", "lpp led feedback", { "off", "on" }, 2)
+    params:set_action("permute_lpp_led_feedback", function(v)
+        app.lpp_led_feedback = (v == 2)
+        if app.lpp_enabled and app.lpp_refresh_octave_leds then app:lpp_refresh_octave_leds() end
+    end)
+
+    for _, zone in ipairs(LPP_COLOR_ZONES) do
+        local colors = (app.lpp_zone_melodic_colors or {})[zone] or {}
+        local label = zone:gsub("zone_", "")
+        local octave_id = "permute_lpp_" .. zone .. "_octave_color"
+        local note_id = "permute_lpp_" .. zone .. "_note_color"
+        params:add_number(octave_id, "lpp " .. label .. " octave color", 0, 127, clamp(tonumber(colors.octave) or 0, 0, 127))
+        params:set_action(octave_id, function(v)
+            if type(app.lpp_zone_melodic_colors) ~= "table" then app.lpp_zone_melodic_colors = {} end
+            if type(app.lpp_zone_melodic_colors[zone]) ~= "table" then app.lpp_zone_melodic_colors[zone] = {} end
+            app.lpp_zone_melodic_colors[zone].octave = clamp(tonumber(v) or 0, 0, 127)
+            if app.lpp_enabled and app.lpp_refresh_octave_leds then app:lpp_refresh_octave_leds() end
+        end)
+
+        params:add_number(note_id, "lpp " .. label .. " note color", 0, 127, clamp(tonumber(colors.note) or 0, 0, 127))
+        params:set_action(note_id, function(v)
+            if type(app.lpp_zone_melodic_colors) ~= "table" then app.lpp_zone_melodic_colors = {} end
+            if type(app.lpp_zone_melodic_colors[zone]) ~= "table" then app.lpp_zone_melodic_colors[zone] = {} end
+            app.lpp_zone_melodic_colors[zone].note = clamp(tonumber(v) or 0, 0, 127)
+            if app.lpp_enabled and app.lpp_refresh_octave_leds then app:lpp_refresh_octave_leds() end
+        end)
+    end
+
+    params:add_number("permute_lpp_clear_button_mapped_color", "lpp clear mapped color", 0, 127,
+        clamp(tonumber(app.lpp_clear_button_mapped_color) or 9, 0, 127))
+    params:set_action("permute_lpp_clear_button_mapped_color", function(v)
+        app.lpp_clear_button_mapped_color = clamp(tonumber(v) or 9, 0, 127)
+        if app.lpp_enabled and app.lpp_refresh_octave_leds then app:lpp_refresh_octave_leds() end
+    end)
+
+    params:add_number("permute_lpp_clear_button_unmapped_color", "lpp clear unmapped color", 0, 127,
+        clamp(tonumber(app.lpp_clear_button_unmapped_color) or 1, 0, 127))
+    params:set_action("permute_lpp_clear_button_unmapped_color", function(v)
+        app.lpp_clear_button_unmapped_color = clamp(tonumber(v) or 1, 0, 127)
+        if app.lpp_enabled and app.lpp_refresh_octave_leds then app:lpp_refresh_octave_leds() end
+    end)
+
+    for i = 1, 8 do
+        local id = "permute_lpp_drum_track_" .. tostring(i) .. "_color"
+        params:add_number(id, "lpp drum " .. tostring(i) .. " color", 0, 127,
+            clamp(tonumber((app.lpp_drum_track_colors or {})[i]) or 0, 0, 127))
+        params:set_action(id, function(v)
+            if type(app.lpp_drum_track_colors) ~= "table" then app.lpp_drum_track_colors = {} end
+            app.lpp_drum_track_colors[i] = clamp(tonumber(v) or 0, 0, 127)
+            if app.lpp_enabled and app.lpp_refresh_octave_leds then app:lpp_refresh_octave_leds() end
         end)
     end
 

@@ -1,7 +1,9 @@
 local H = include("lib/core/util")
 local cfg = H.cfg
 local deep_copy_table = H.deep_copy_table
+local clamp = H.clamp
 local ARC_DELTA_THRESHOLDS = H.ARC_DELTA_THRESHOLDS
+local lpp_map = include("lib/io/lpp_map")
 
 local App = {}
 App.__index = App
@@ -45,6 +47,7 @@ function App.new()
     self.track_clock_mult = {}
     self.track_clock_phase = {}
     self.track_loop_count = {}
+    self.track_state_validated_step_limit = {}
 
     self.mod_held = {}
     self.key_held = {}
@@ -58,6 +61,8 @@ function App.new()
     self.mod_double_tap_ms = 250
     self.takeover_mode = false
     self.realtime_play_mode = false
+    self.external_midi_record_mode = false
+    self.track_select_focus_mode = false
     self.realtime_row_holds = {}
     self.beat_repeat_len = 0
     self.beat_repeat_mode = "full-row"
@@ -80,9 +85,35 @@ function App.new()
     self.spice_accum_min = cfg.SPICE_MIN
     self.spice_accum_max = cfg.SPICE_MAX
     self.track_transpose = {}
+    self.track_edit_octave_page = {}
+    self.track_view_page = {}
+    self.track_aux_page = {}
+    self.track_playhead_page = {}
     self.track_rand_gate_prob = {}
     self.track_rand_pitch_prob = {}
     self.track_rand_pitch_span = {}
+    self.follow_page_on_playhead = false
+    self.follow_page_on_playhead_aux_takeover = false
+    self.follow_page_on_playhead_aux = false
+    self.global_swing_percent = 50
+    self.global_swing_profile = "mpc1000"
+    self.transport_scheduler_ppqn = 96
+    self.external_clock_smooth = 0.25
+    self.external_clock_tempo_update_interval = 0.25
+    self.external_clock_screen_refresh_interval = 0.25
+    self.external_clock_last_time = nil
+    self.external_clock_bpm_estimate = nil
+    self.external_clock_display_bpm = nil
+    self.external_clock_display_interval = nil
+    self.external_clock_display_interval_samples = {}
+    self.external_clock_display_last_interval = nil
+    self.external_clock_last_tempo_update = nil
+    self.external_clock_last_screen_refresh_ms = 0
+    self.external_clock_input_ppqn = 24
+    self.external_clock_interpolation_ppqn = 96
+    self.external_clock_subtick_id = nil
+    self.external_clock_subtick_generation = 0
+    self.external_clock_subtick_progress = 0
     self.transpose_mode = "semitone"
     self.transpose_takeover_mode = false
     self.transpose_seq_enabled = false
@@ -104,6 +135,9 @@ function App.new()
     self.redo_stack = {}
     self.history_limit = 5
     self.suspend_history = false
+    self.undo_coalesce_ms = 140
+    self.undo_last_tag = nil
+    self.undo_last_ms = nil
 
     self.master_seq_len_enabled = false
     self.master_seq_len = cfg.DEFAULT_MASTER_SEQ_LEN
@@ -127,6 +161,7 @@ function App.new()
     self.grid_dirty = true
     self.aux_grid_dirty = true
     self.arc_dirty = true
+    self.prev_menu_active = false
     self.grid_timer = nil
     self.gc_metro = nil
     self.internal_clock_id = nil
@@ -150,6 +185,31 @@ function App.new()
     self.midi_out_ports_snapshot = { 1 }
     self.midi_active_ports = { [1] = true }
     self.midi_clock_in_port = nil
+    self.midi_in_port_slots = { 0, 0 }
+    self.midi_in_ports = {}
+    self.midi_in_ports_snapshot = {}
+    self.midi_in_active_ports = {}
+    self.midi_in_auto_channel = 16
+    self.midi_in_active_notes = {}
+    self.midi_in_record_holds = {}
+    self.midi_record_skip_once = {}
+    self.lpp_enabled = false
+    self.lpp_input_port = 0
+    self.lpp_programmer_auto_enter = false
+    self.lpp_led_feedback = true
+    self.lpp_octave_min = -4
+    self.lpp_octave_max = 4
+    self.lpp_zone_octave = { zone_b = 0, zone_c = 0, zone_d = 0, zone_e = 0 }
+    self.lpp_zone_track = { zone_b = 11, zone_c = 12, zone_d = 13, zone_e = 14 }
+    self.lpp_zone_melodic_colors = deep_copy_table(lpp_map.zone_melodic_colors or {})
+    self.lpp_length_modifier_held = false
+    self.lpp_drum_track_colors = {}
+    for i = 1, 8 do
+        self.lpp_drum_track_colors[i] = clamp(tonumber((lpp_map.drum_palette_by_note or {})[10 + i]) or 0, 0, 127)
+    end
+    self.lpp_clear_button_mapped_color = 9
+    self.lpp_clear_button_unmapped_color = 1
+    self.lpp_drum_page = 1
     self.step_cache = {}
     self.step_cache_meta = {}
     self.step_cache_rev = {}
@@ -171,7 +231,12 @@ function App.new()
     self.clock_debug_dt_samples = {}
     self.clock_debug_overrun_samples = {}
     self.clock_debug_hist = { [1] = 0, [2] = 0, [3] = 0, [4] = 0, [5] = 0 }
+    self.clock_debug_rate_counts = {}
+    self.clock_debug_rate_start_ms = nil
+    self.clock_debug_rate_last_ms = nil
+    self.clock_debug_note_events = false
 
+    local track_step_limit = math.max(tonumber(cfg.MAX_STEPS) or cfg.NUM_STEPS, cfg.NUM_STEPS)
     for t = 1, cfg.NUM_TRACKS do
         self.tracks[t] = {
             gates = {},
@@ -190,7 +255,7 @@ function App.new()
                 mode = 1
             }
         }
-        for s = 1, cfg.NUM_STEPS do
+        for s = 1, track_step_limit do
             self.tracks[t].gates[s] = false
             self.tracks[t].ties[s] = false
             self.tracks[t].vels[s] = cfg.DEFAULT_VEL_LEVEL
@@ -210,6 +275,8 @@ function App.new()
         self.ratios[t] = {}
         self.spice[t] = {}
         self.track_transpose[t] = 0
+        self.track_edit_octave_page[t] = 0
+        self.track_view_page[t] = 1
         self.track_rand_gate_prob[t] = 0
         self.track_rand_pitch_prob[t] = 0
         self.track_rand_pitch_span[t] = 0

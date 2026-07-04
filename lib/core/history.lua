@@ -62,6 +62,9 @@ function M.install(App)
                 tr.ties = deep_copy_table(src.ties or {})
                 tr.vels = deep_copy_table(src.vels or {})
                 tr.pitches = deep_copy_table(src.pitches or {})
+                if type(self.track_state_validated_step_limit) == "table" then
+                    self.track_state_validated_step_limit[t] = nil
+                end
                 self:ensure_track_state(t)
             end
         end
@@ -72,8 +75,22 @@ function M.install(App)
         self:request_aux_redraw()
     end
 
-    function App:push_undo_state()
+    function App:push_undo_state(tag, coalesce_ms)
         if self.suspend_history then return end
+
+        if tag ~= nil then
+            local now = now_ms()
+            local window = tonumber(coalesce_ms) or tonumber(self.undo_coalesce_ms) or 0
+            if window > 0 and self.undo_last_tag == tag and self.undo_last_ms ~= nil and (now - self.undo_last_ms) < window then
+                return
+            end
+            self.undo_last_tag = tag
+            self.undo_last_ms = now
+        else
+            self.undo_last_tag = nil
+            self.undo_last_ms = nil
+        end
+
         self.undo_stack[#self.undo_stack + 1] = self:export_undo_state()
         while #self.undo_stack > self.history_limit do
             table.remove(self.undo_stack, 1)
@@ -94,6 +111,8 @@ function M.install(App)
         self:stop_all_notes()
         self:import_undo_state(previous)
         self.suspend_history = false
+        self.undo_last_tag = nil
+        self.undo_last_ms = nil
         self:request_redraw()
         self:request_aux_redraw()
         return true
@@ -112,6 +131,8 @@ function M.install(App)
         self:stop_all_notes()
         self:import_undo_state(next_state)
         self.suspend_history = false
+        self.undo_last_tag = nil
+        self.undo_last_ms = nil
         self:request_redraw()
         self:request_aux_redraw()
         return true

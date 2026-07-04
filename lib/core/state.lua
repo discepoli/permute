@@ -16,6 +16,116 @@ local TRACK_SELECT_MOD = H.TRACK_SELECT_MOD
 local M = {}
 
 function M.install(App)
+    function App:get_track_step_limit()
+        return math.max(tonumber(cfg.MAX_STEPS) or cfg.NUM_STEPS, cfg.NUM_STEPS)
+    end
+
+    function App:get_track_page_size()
+        return math.max(tonumber(cfg.PAGE_SIZE) or cfg.NUM_STEPS, 1)
+    end
+
+    function App:clamp_track_step(step, default_step)
+        local fallback = tonumber(default_step) or 1
+        return clamp(tonumber(step) or fallback, 1, self:get_track_step_limit())
+    end
+
+    function App:track_step_to_page(step)
+        local abs_step = self:clamp_track_step(step, 1)
+        local page_size = self:get_track_page_size()
+        local page = math.floor((abs_step - 1) / page_size) + 1
+        local col = ((abs_step - 1) % page_size) + 1
+        return page, col
+    end
+
+    function App:track_page_col_to_step(page, col)
+        local page_size = self:get_track_page_size()
+        local p = math.max(tonumber(page) or 1, 1)
+        local c = clamp(tonumber(col) or 1, 1, page_size)
+        local abs_step = ((p - 1) * page_size) + c
+        return self:clamp_track_step(abs_step, 1)
+    end
+
+    function App:get_track_max_pages()
+        local page_size = self:get_track_page_size()
+        local by_limit = math.max(1, math.floor((self:get_track_step_limit() - 1) / page_size) + 1)
+        local by_cfg = math.max(tonumber(cfg.MAX_PAGES) or by_limit, 1)
+        return math.min(by_limit, by_cfg)
+    end
+
+    function App:get_track_view_page(track)
+        local t = clamp(tonumber(track) or tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+        if type(self.track_view_page) ~= "table" then self.track_view_page = {} end
+        local page = clamp(tonumber(self.track_view_page[t]) or 1, 1, self:get_track_max_pages())
+        self.track_view_page[t] = page
+        return page
+    end
+
+    function App:set_track_view_page(track, page)
+        local t = clamp(tonumber(track) or tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+        if type(self.track_view_page) ~= "table" then self.track_view_page = {} end
+        local next_page = clamp(tonumber(page) or 1, 1, self:get_track_max_pages())
+        self.track_view_page[t] = next_page
+        return next_page
+    end
+
+    function App:get_track_aux_page(track)
+        local t = clamp(tonumber(track) or tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+        if type(self.track_aux_page) ~= "table" then self.track_aux_page = {} end
+        local fallback = self:get_track_view_page(t)
+        local page = clamp(tonumber(self.track_aux_page[t]) or fallback, 1, self:get_track_max_pages())
+        self.track_aux_page[t] = page
+        return page
+    end
+
+    function App:set_track_aux_page(track, page)
+        local t = clamp(tonumber(track) or tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+        if type(self.track_aux_page) ~= "table" then self.track_aux_page = {} end
+        local next_page = clamp(tonumber(page) or 1, 1, self:get_track_max_pages())
+        self.track_aux_page[t] = next_page
+        return next_page
+    end
+
+    function App:get_track_playhead_page(track)
+        local t = clamp(tonumber(track) or tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+        if type(self.track_playhead_page) ~= "table" then self.track_playhead_page = {} end
+        local fallback = self:get_track_view_page(t)
+        local page = clamp(tonumber(self.track_playhead_page[t]) or fallback, 1, self:get_track_max_pages())
+        self.track_playhead_page[t] = page
+        return page
+    end
+
+    function App:set_track_playhead_page(track, page)
+        local t = clamp(tonumber(track) or tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+        if type(self.track_playhead_page) ~= "table" then self.track_playhead_page = {} end
+        local next_page = clamp(tonumber(page) or 1, 1, self:get_track_max_pages())
+        self.track_playhead_page[t] = next_page
+        return next_page
+    end
+
+    function App:get_track_main_grid_page(track)
+        local t = clamp(tonumber(track) or tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+        if self.follow_page_on_playhead and not self.takeover_mode and not self.transpose_takeover_mode then
+            return self:get_track_playhead_page(t)
+        end
+        return self:get_track_view_page(t)
+    end
+
+    function App:get_track_visible_step(track, column, page_override)
+        local t = clamp(tonumber(track) or tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+        local page = page_override and clamp(tonumber(page_override) or 1, 1, self:get_track_max_pages()) or
+            self:get_track_view_page(t)
+        return self:track_page_col_to_step(page, column)
+    end
+
+    function App:get_track_visible_step_window(track, page_override)
+        local t = clamp(tonumber(track) or tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+        local page = page_override and clamp(tonumber(page_override) or 1, 1, self:get_track_max_pages()) or
+            self:get_track_view_page(t)
+        local first = self:get_track_visible_step(t, 1, page)
+        local last = self:get_track_visible_step(t, cfg.NUM_STEPS, page)
+        return first, last, page
+    end
+
     function App:is_track_melodic(track)
         local tc = self.track_cfg[track]
         return tc and tc.type ~= "drum"
@@ -50,6 +160,7 @@ function M.install(App)
             self.track_steps[t] = 1
             self.track_clock_phase[t] = 0
             self.track_loop_count[t] = 1
+            self:set_track_playhead_page(t, self:get_track_view_page(t))
         end
         self:request_redraw()
         self:request_aux_redraw()
@@ -82,8 +193,9 @@ function M.install(App)
         local tc = self.track_cfg[t]
         if not tr then return nil end
 
-        tr.start_step = clamp(tonumber(tr.start_step) or 1, 1, cfg.NUM_STEPS)
-        tr.end_step = clamp(tonumber(tr.end_step) or cfg.NUM_STEPS, 1, cfg.NUM_STEPS)
+        local step_limit = self:get_track_step_limit()
+        tr.start_step = clamp(tonumber(tr.start_step) or 1, 1, step_limit)
+        tr.end_step = clamp(tonumber(tr.end_step) or cfg.NUM_STEPS, 1, step_limit)
         tr.octave = tonumber(tr.octave) or 0
         tr.muted = not not tr.muted
         tr.solo = not not tr.solo
@@ -93,7 +205,7 @@ function M.install(App)
         if not tr.vels then tr.vels = {} end
         if not tr.pitches then tr.pitches = {} end
         if type(tr.arc) ~= "table" then tr.arc = {} end
-        tr.arc.pulses = clamp(tonumber(tr.arc.pulses) or 0, 0, cfg.NUM_STEPS)
+        tr.arc.pulses = clamp(tonumber(tr.arc.pulses) or 0, 0, step_limit)
         tr.arc.rotation = math.floor(tonumber(tr.arc.rotation) or 1)
         tr.arc.variance = clamp(tonumber(tr.arc.variance) or 0, 0, 100)
         tr.arc.mode = self:normalize_arc_mode(tr.arc.mode)
@@ -105,30 +217,47 @@ function M.install(App)
         self.track_clock_div[t] = clamp(tonumber(self.track_clock_div[t]) or 1, 1, 64)
         if self.track_clock_phase[t] == nil then self.track_clock_phase[t] = 0 end
 
-        for s = 1, cfg.NUM_STEPS do
-            if tr.gates[s] == nil then tr.gates[s] = false end
-            if tr.ties[s] == nil then tr.ties[s] = false end
-            if not tr.gates[s] then tr.ties[s] = false end
-            tr.vels[s] = clamp(tonumber(tr.vels[s]) or cfg.DEFAULT_VEL_LEVEL, 1, 15)
-            if tc and tc.type == "poly" then
-                local pv = tr.pitches[s]
-                if type(pv) ~= "table" then
-                    pv = { clamp(tonumber(pv) or 1, 1, 16) }
-                end
-                local clean = {}
-                local seen = {}
-                for _, d in ipairs(pv) do
-                    local di = clamp(tonumber(d) or 1, 1, 16)
-                    if not seen[di] then
-                        clean[#clean + 1] = di
-                        seen[di] = true
+        if type(self.track_state_validated_step_limit) ~= "table" then
+            self.track_state_validated_step_limit = {}
+        end
+        local validated_limit = tonumber(self.track_state_validated_step_limit[t]) or 0
+        local needs_full_resync = validated_limit ~= step_limit
+        if not needs_full_resync then
+            needs_full_resync = tr.gates[1] == nil
+                or tr.gates[step_limit] == nil
+                or tr.vels[1] == nil
+                or tr.vels[step_limit] == nil
+                or tr.pitches[1] == nil
+                or tr.pitches[step_limit] == nil
+        end
+
+        if needs_full_resync then
+            for s = 1, step_limit do
+                if tr.gates[s] == nil then tr.gates[s] = false end
+                if tr.ties[s] == nil then tr.ties[s] = false end
+                if not tr.gates[s] then tr.ties[s] = false end
+                tr.vels[s] = clamp(tonumber(tr.vels[s]) or cfg.DEFAULT_VEL_LEVEL, 1, 15)
+                if tc and tc.type == "poly" then
+                    local pv = tr.pitches[s]
+                    if type(pv) ~= "table" then
+                        pv = { clamp(tonumber(pv) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE) }
                     end
+                    local clean = {}
+                    local seen = {}
+                    for _, d in ipairs(pv) do
+                        local di = clamp(tonumber(d) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
+                        if not seen[di] then
+                            clean[#clean + 1] = di
+                            seen[di] = true
+                        end
+                    end
+                    if #clean == 0 then clean[1] = 1 end
+                    tr.pitches[s] = clean
+                else
+                    tr.pitches[s] = clamp(tonumber(tr.pitches[s]) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
                 end
-                if #clean == 0 then clean[1] = 1 end
-                tr.pitches[s] = clean
-            else
-                tr.pitches[s] = clamp(tonumber(tr.pitches[s]) or 1, 1, 16)
             end
+            self.track_state_validated_step_limit[t] = step_limit
         end
 
         return tr
@@ -151,17 +280,18 @@ function M.install(App)
 
         self:note_off_last_for_track(track)
 
-        for s = 1, cfg.NUM_STEPS do
+        local step_limit = self:get_track_step_limit()
+        for s = 1, step_limit do
             local pv = tr.pitches[s]
             if new_type == "poly" then
                 if type(pv) ~= "table" then
-                    tr.pitches[s] = { clamp(tonumber(pv) or 1, 1, 16) }
+                    tr.pitches[s] = { clamp(tonumber(pv) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE) }
                 end
             else
                 if type(pv) == "table" then
-                    tr.pitches[s] = clamp(tonumber(pv[1]) or 1, 1, 16)
+                    tr.pitches[s] = clamp(tonumber(pv[1]) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
                 else
-                    tr.pitches[s] = clamp(tonumber(pv) or 1, 1, 16)
+                    tr.pitches[s] = clamp(tonumber(pv) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
                 end
             end
         end

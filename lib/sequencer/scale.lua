@@ -49,13 +49,36 @@ function M.install(App)
         return mode, root
     end
 
-    function App:main_takeover_row_to_degree(y)
-        local rows = self:get_main_takeover_note_rows()
-        return clamp(rows - y + 1, 1, rows)
+    function App:get_scale_degree_span()
+        local scale = cfg.SCALES[self.scale_type] or cfg.SCALES.chromatic
+        return math.max(1, #scale)
     end
 
-    function App:aux_row_to_degree(y)
-        return clamp(cfg.AUX_GRID_ROWS - y + 1, 1, cfg.AUX_GRID_ROWS)
+    function App:get_track_edit_octave_page(track)
+        local t = clamp(tonumber(track) or tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+        return clamp(tonumber((self.track_edit_octave_page or {})[t]) or 0, -7, 8)
+    end
+
+    function App:get_track_edit_degree_offset(track)
+        return self:get_track_edit_octave_page(track) * self:get_scale_degree_span()
+    end
+
+    function App:get_track_visible_degree(track, local_degree)
+        local d = clamp(tonumber(local_degree) or 1, 1, cfg.AUX_GRID_ROWS)
+        return clamp(d + self:get_track_edit_degree_offset(track), cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
+    end
+
+    function App:main_takeover_row_to_degree(y, track)
+        local rows = self:get_main_takeover_note_rows()
+        local local_degree = clamp(rows - y + 1, 1, rows)
+        local absolute_degree = local_degree + self:get_track_edit_degree_offset(track)
+        return clamp(absolute_degree, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
+    end
+
+    function App:aux_row_to_degree(y, track)
+        local local_degree = clamp(cfg.AUX_GRID_ROWS - y + 1, 1, cfg.AUX_GRID_ROWS)
+        local absolute_degree = local_degree + self:get_track_edit_degree_offset(track)
+        return clamp(absolute_degree, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
     end
 
     function App:degree_to_aux_row(degree)
@@ -63,28 +86,83 @@ function M.install(App)
         return cfg.AUX_GRID_ROWS - d + 1
     end
 
-    function App:get_pitch(track, degree, extra_degrees, ctx)
+    function App:get_visible_degree_window(track, surface)
+        local t = clamp(tonumber(track) or tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+        local min_degree
+        local max_degree
+        if surface == "takeover" then
+            local rows = self:get_main_takeover_note_rows()
+            min_degree = self:main_takeover_row_to_degree(rows, t)
+            max_degree = self:main_takeover_row_to_degree(1, t)
+        else
+            min_degree = self:get_track_visible_degree(t, 1)
+            max_degree = self:get_track_visible_degree(t, cfg.AUX_GRID_ROWS)
+        end
+        if min_degree > max_degree then
+            min_degree, max_degree = max_degree, min_degree
+        end
+        return min_degree, max_degree
+    end
+
+    function App:get_active_scale_context(track, ctx)
         local scale = ctx and ctx.scale
         local mode_root = ctx and ctx.mode_root
         if not scale or mode_root == nil then
             scale, mode_root = self:get_mode_scale_and_root()
         end
-        local base = cfg.DEFAULT_MELODIC_BASE_NOTE
-        base = base + clamp(tonumber(self.key_root) or 0, 0, 11) + mode_root
+        local t = tonumber(track)
+        if t ~= nil then
+            t = clamp(t, 1, cfg.NUM_TRACKS)
+        end
 
-        local track_transpose = clamp(tonumber(self.track_transpose[track]) or 0, -7, 8)
-        local degree_transpose = 0
+        local base = ctx and ctx.base_note
+        local degree_transpose = ctx and ctx.degree_transpose
+        local track_octave = ctx and ctx.track_octave
         local transpose_mode = (ctx and ctx.transpose_mode) or self.transpose_mode
-        if transpose_mode == "scale degree" then
-            degree_transpose = track_transpose
-        else
-            base = base + track_transpose
+
+        if base == nil then
+            base = cfg.DEFAULT_MELODIC_BASE_NOTE
+            base = base + clamp(tonumber(self.key_root) or 0, 0, 11) + mode_root
         end
-        if self:is_transpose_seq_active_for_track(track) then
-            degree_transpose = degree_transpose + ((ctx and ctx.transpose_seq_degree) or self:get_transpose_seq_current_degree())
+        if degree_transpose == nil then
+            degree_transpose = 0
+        end
+        if track_octave == nil then
+            local tr = (t and self.tracks) and self.tracks[t] or nil
+            track_octave = tonumber(tr and tr.octave) or 0
         end
 
-        local total_degree = degree + (extra_degrees or 0) + degree_transpose
+        if t ~= nil then
+            local track_transpose = clamp(tonumber(self.track_transpose[t]) or 0, -7, 8)
+            if transpose_mode == "scale degree" then
+                degree_transpose = degree_transpose + track_transpose
+            else
+                base = base + track_transpose
+            end
+
+            if self:is_transpose_seq_active_for_track(t) then
+                local seq_degree = (ctx and ctx.transpose_seq_degree)
+                if seq_degree == nil then
+                    seq_degree = self:get_transpose_seq_current_degree()
+                end
+                degree_transpose = degree_transpose + seq_degree
+            end
+        end
+
+        return {
+            scale = scale,
+            mode_root = mode_root,
+            base_note = base,
+            degree_transpose = degree_transpose,
+            track_octave = track_octave,
+            transpose_mode = transpose_mode,
+        }
+    end
+
+    function App:degree_to_note(track, degree, extra_degrees, ctx)
+        local pitch_ctx = self:get_active_scale_context(track, ctx)
+        local scale = pitch_ctx.scale
+        local total_degree = (tonumber(degree) or 1) + (tonumber(extra_degrees) or 0) + pitch_ctx.degree_transpose
 
         local oct = math.floor((total_degree - 1) / #scale)
         local idx = ((total_degree - 1) % #scale) + 1
@@ -93,8 +171,32 @@ function M.install(App)
             oct = oct - 1
         end
 
-        local note = base + scale[idx] + (oct * 12) + (self.tracks[track].octave * 12)
+        local note = pitch_ctx.base_note + scale[idx] + (oct * 12) + (pitch_ctx.track_octave * 12)
         return clamp(note, 0, 127)
+    end
+
+    function App:get_pitch(track, degree, extra_degrees, ctx)
+        return self:degree_to_note(track, degree, extra_degrees, ctx)
+    end
+
+    function App:note_to_nearest_degree(track, midi_note, ctx, degree_min, degree_max)
+        local pitch_ctx = self:get_active_scale_context(track, ctx)
+        local target_note = clamp(tonumber(midi_note) or 0, 0, 127)
+        local lo = clamp(tonumber(degree_min) or cfg.MIN_SCALE_DEGREE, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
+        local hi = clamp(tonumber(degree_max) or cfg.MAX_SCALE_DEGREE, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
+        if lo > hi then lo, hi = hi, lo end
+
+        local best_degree = lo
+        local best_distance = 128
+        for degree = lo, hi do
+            local candidate = self:degree_to_note(track, degree, 0, pitch_ctx)
+            local distance = math.abs(candidate - target_note)
+            if distance < best_distance then
+                best_distance = distance
+                best_degree = degree
+            end
+        end
+        return best_degree
     end
 
     function App:note_label(note)

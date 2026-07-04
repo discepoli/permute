@@ -33,8 +33,9 @@ function M.install(App)
         if not tr or not tc then return end
 
         local gate_prob = clamp(tonumber(self.track_rand_gate_prob[t]) or 0, 0, 1)
+        local step_limit = self:get_track_step_limit()
         if gate_prob > 0 then
-            for s = 1, cfg.NUM_STEPS do
+            for s = 1, step_limit do
                 if math.random() < gate_prob then
                     tr.gates[s] = not tr.gates[s]
                     if tr.ties then tr.ties[s] = false end
@@ -52,7 +53,7 @@ function M.install(App)
             return
         end
 
-        for s = 1, cfg.NUM_STEPS do
+        for s = 1, step_limit do
             if tr.gates[s] and math.random() < pitch_prob then
                 local delta = math.random(1, pitch_span)
                 if math.random(1, 2) == 1 then delta = -delta end
@@ -60,13 +61,15 @@ function M.install(App)
                     tr.vels[s] = clamp((tonumber(tr.vels[s]) or self:get_track_default_vel_level(t)) + delta, 1, 15)
                 elseif tc.type == "poly" then
                     local pv = tr.pitches[s]
-                    if type(pv) ~= "table" then pv = { clamp(tonumber(pv) or 1, 1, 16) } end
+                    if type(pv) ~= "table" then
+                        pv = { clamp(tonumber(pv) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE) }
+                    end
                     for i = 1, #pv do
-                        pv[i] = clamp((tonumber(pv[i]) or 1) + delta, 1, 16)
+                        pv[i] = clamp((tonumber(pv[i]) or 1) + delta, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
                     end
                     tr.pitches[s] = pv
                 else
-                    tr.pitches[s] = clamp((tonumber(tr.pitches[s]) or 1) + delta, 1, 16)
+                    tr.pitches[s] = clamp((tonumber(tr.pitches[s]) or 1) + delta, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
                 end
             end
         end
@@ -78,7 +81,8 @@ function M.install(App)
         local tc = self.track_cfg[track]
         local is_drum = (tc.type == "drum")
         local center_degree = 1
-        for s = 1, cfg.NUM_STEPS do
+        local step_limit = self:get_track_step_limit()
+        for s = 1, step_limit do
             if tr.gates[s] then
                 local shift = math.random(0, amount)
                 if math.random(1, 2) == 1 then shift = -shift end
@@ -88,10 +92,10 @@ function M.install(App)
                     for i, _ in ipairs(tr.pitches[s]) do
                         local p_shift = math.random(0, amount)
                         if math.random(1, 2) == 1 then p_shift = -p_shift end
-                        tr.pitches[s][i] = clamp(center_degree + p_shift, 1, 16)
+                        tr.pitches[s][i] = clamp(center_degree + p_shift, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
                     end
                 else
-                    tr.pitches[s] = clamp(center_degree + shift, 1, 16)
+                    tr.pitches[s] = clamp(center_degree + shift, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
                 end
             end
         end

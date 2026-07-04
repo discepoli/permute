@@ -12,10 +12,177 @@ local ARC_VARIANCE_MODES = H.ARC_VARIANCE_MODES
 local ARC_CADENCE_SHAPES = H.ARC_CADENCE_SHAPES
 local ARC_DELTA_THRESHOLDS = H.ARC_DELTA_THRESHOLDS
 local TRACK_SELECT_MOD = H.TRACK_SELECT_MOD
+local swing_profiles = include("lib/sequencer/swing_profiles")
 
 local M = {}
 
 function M.install(App)
+    function App:get_track_swing_percent(_track)
+        return clamp(tonumber(self.global_swing_percent) or 50, 25, 75)
+    end
+
+    function App:get_track_swing_profile_name(_track)
+        local profile = self.global_swing_profile or "linear"
+        if not ((swing_profiles.enabled or {})[profile]) then
+            profile = "linear"
+        end
+        return profile
+    end
+
+    function App:get_track_swing_step_ticks(track, step_counter)
+        local profile = self:get_track_swing_profile_name(track)
+        local tables = swing_profiles.timings or {}
+        local timing = tables[profile] or tables.mpc1000 or {}
+        local p = self:get_track_swing_percent(track)
+        local ts = math.max(tonumber(step_counter) or 1, 1)
+        local idx = (ts % 16) + 1
+        local ticks = cfg.MIDI_CLOCK_TICKS_PER_STEP
+
+        if p == 50 or ts == 1 then
+            return ticks
+        end
+
+        if p > 50 then
+            local tpl = timing[p]
+            if type(tpl) == "table" then
+                ticks = tonumber(tpl[idx]) or ticks
+            end
+        else
+            local mirrored = clamp(100 - p, 50, 75)
+            local tpl = timing[mirrored]
+            if type(tpl) == "table" then
+                local mirrored_ticks = tonumber(tpl[idx]) or ticks
+                ticks = (cfg.MIDI_CLOCK_TICKS_PER_STEP * 2) - mirrored_ticks
+            end
+        end
+
+        return math.max(0.001, tonumber(ticks) or cfg.MIDI_CLOCK_TICKS_PER_STEP)
+    end
+
+    function App:get_transport_tick_delta()
+        local ppqn = math.max(tonumber(self.transport_scheduler_ppqn) or 96, 24)
+        return 24 / ppqn
+    end
+
+    function App:update_clock_tempo(bpm)
+        local tempo = clamp(tonumber(bpm) or 120, 20, 300)
+        self.tempo_bpm = tempo
+        pcall(function() clock.tempo = tempo end)
+    end
+
+    function App:on_external_clock_pulse()
+        local now = util.time() or 0
+        local interval = nil
+        if self.external_clock_last_time ~= nil then
+            local dt = now - self.external_clock_last_time
+            if dt > 0 and dt < 1 then
+                interval = dt
+                self.external_clock_display_interval = dt
+                local input_ppqn = self:get_external_clock_input_ppqn()
+                local instant_bpm = clamp(60 / (dt * input_ppqn), 20, 300)
+                local smooth = clamp(tonumber(self.external_clock_smooth) or 0.25, 0.01, 1)
+                local prev = tonumber(self.external_clock_bpm_estimate) or instant_bpm
+                local blended = prev + ((instant_bpm - prev) * smooth)
+                self.external_clock_bpm_estimate = blended
+                local min_interval = math.max(tonumber(self.external_clock_tempo_update_interval) or 0.25, 0)
+                local last_update = tonumber(self.external_clock_last_tempo_update)
+                if not last_update or min_interval == 0 or (now - last_update) >= min_interval then
+                    self.external_clock_last_tempo_update = now
+                    if self.use_midi_clock and self.request_redraw then self:request_redraw() end
+                end
+            end
+        end
+        self.external_clock_last_time = now
+        return interval
+    end
+
+    function App:get_external_clock_input_ppqn()
+        return math.max(tonumber(self.external_clock_input_ppqn) or 24, 24)
+    end
+
+    function App:get_external_clock_pulse_delta()
+        return 24 / self:get_external_clock_input_ppqn()
+    end
+
+    function App:get_external_clock_subdivisions()
+        local input_ppqn = self:get_external_clock_input_ppqn()
+        local target_ppqn = math.max(tonumber(self.external_clock_interpolation_ppqn) or input_ppqn, input_ppqn)
+        return math.max(1, math.floor((target_ppqn / input_ppqn) + 0.5))
+    end
+
+    function App:cancel_external_clock_subtick_scheduler()
+        self.external_clock_subtick_generation = (tonumber(self.external_clock_subtick_generation) or 0) + 1
+        if self.external_clock_subtick_id then
+            clock.cancel(self.external_clock_subtick_id)
+            self.external_clock_subtick_id = nil
+        end
+    end
+
+    function App:schedule_external_clock_subticks(interval)
+        local subdivisions = self:get_external_clock_subdivisions()
+        if subdivisions <= 1 then return end
+        local pulse_interval = tonumber(interval) or 0
+        if pulse_interval <= 0 or pulse_interval >= 1 then return end
+
+        self:cancel_external_clock_subtick_scheduler()
+        local generation = tonumber(self.external_clock_subtick_generation) or 0
+        local sleep_time = pulse_interval / subdivisions
+        local delta = self:get_external_clock_pulse_delta() / subdivisions
+        local max_progress = self:get_external_clock_pulse_delta() - delta
+        self.external_clock_subtick_id = clock.run(function()
+            for _ = 1, subdivisions - 1 do
+                clock.sleep(sleep_time)
+                if generation ~= self.external_clock_subtick_generation then return end
+                if not self.playing or not self.use_midi_clock then return end
+                self.external_clock_subtick_progress = math.min(
+                    (tonumber(self.external_clock_subtick_progress) or 0) + delta,
+                    max_progress)
+                self:run_internal_clock_iteration(delta)
+            end
+            if generation == self.external_clock_subtick_generation then
+                self.external_clock_subtick_id = nil
+            end
+        end)
+    end
+
+    function App:advance_external_clock_pulse(interval)
+        local subdivisions = self:get_external_clock_subdivisions()
+        local pulse_delta = self:get_external_clock_pulse_delta()
+        if subdivisions <= 1 then
+            self:run_internal_clock_iteration(pulse_delta)
+            return
+        end
+
+        self:cancel_external_clock_subtick_scheduler()
+        local subtick_delta = pulse_delta / subdivisions
+        local progress = clamp(tonumber(self.external_clock_subtick_progress) or 0, 0, pulse_delta - subtick_delta)
+        self.external_clock_subtick_progress = 0
+        self:run_internal_clock_iteration(math.max(subtick_delta, pulse_delta - progress))
+        self:schedule_external_clock_subticks(interval)
+    end
+
+    function App:reset_external_clock_sync()
+        self:cancel_external_clock_subtick_scheduler()
+        self.external_clock_last_time = nil
+        self.external_clock_bpm_estimate = nil
+        if self.reset_external_clock_display_tempo then self:reset_external_clock_display_tempo() end
+        self.external_clock_last_tempo_update = nil
+        self.external_clock_last_screen_refresh_ms = 0
+        self.external_clock_subtick_progress = 0
+    end
+
+    function App:ensure_transport_scheduler_running()
+        if self.use_midi_clock then return end
+        if self.transport_scheduler_id then return end
+        self.transport_scheduler_id = clock.run(function()
+            while self.playing do
+                local ppqn = math.max(tonumber(self.transport_scheduler_ppqn) or 96, 24)
+                clock.sync(1 / ppqn)
+                self:run_internal_clock_iteration(self:get_transport_tick_delta())
+            end
+        end)
+    end
+
     function App:is_reset_timing_next_beat()
         return self.reset_timing == "next beat"
     end
@@ -50,7 +217,7 @@ function M.install(App)
         end
 
         self.pending_meta_reset_on_beat = false
-        self:reset_transpose_meta_sequence()
+        self:reset_transpose_meta_transport()
         self:flash_status("meta reset", "now", 0.35)
     end
 
@@ -76,8 +243,7 @@ function M.install(App)
         end
 
         if self.pending_meta_reset_on_beat then
-            self.transpose_seq_step = 1
-            self.transpose_seq_clock_phase = 0
+            self:reset_transpose_meta_transport()
             self.pending_meta_reset_on_beat = false
             meta_reset = true
         end
@@ -128,18 +294,26 @@ function M.install(App)
         local transpose_mode = self.transpose_mode
         local transpose_seq_degree = self:get_transpose_seq_current_degree()
         local scale = tonumber(pulse_scale) or 1
+        local total_hits = 0
         for t = 1, cfg.NUM_TRACKS do
             local tr = self:ensure_track_state(t)
             local tc = self.track_cfg[t]
             local step_cache = self:build_arc_step_cache(t, tr, tc)
-            local len = math.abs((tonumber(tr.end_step) or cfg.NUM_STEPS) - (tonumber(tr.start_step) or 1)) + 1
+            local len = math.abs((tonumber(tr.end_step) or self:get_track_step_limit()) - (tonumber(tr.start_step) or 1)) + 1
             local mult = self.track_clock_mult[t]
             local div = self.track_clock_div[t]
-            local ratio = (mult / div) * scale
+            local ts = tonumber(self.track_steps[t]) or 1
+            local swing_ticks = self:get_track_swing_step_ticks(t, ts)
+            local swing_factor = cfg.MIDI_CLOCK_TICKS_PER_STEP / math.max(0.001, swing_ticks)
+            local ratio = (mult / div) * scale * swing_factor
             self.track_clock_phase[t] = (tonumber(self.track_clock_phase[t]) or 0) + ratio
-            local hits = math.floor(self.track_clock_phase[t])
+            local hits = math.floor(self.track_clock_phase[t] + 1e-9)
             if hits > 0 then
                 self.track_clock_phase[t] = self.track_clock_phase[t] - hits
+                if math.abs(self.track_clock_phase[t]) < 1e-9 then
+                    self.track_clock_phase[t] = 0
+                end
+                total_hits = total_hits + hits
             end
 
             if hits > 0 and t == self.sel_track then
@@ -148,6 +322,31 @@ function M.install(App)
 
             for _ = 1, hits do
                 local st = self:get_track_step(t)
+                if (self.follow_page_on_playhead or self.follow_page_on_playhead_aux_takeover or self.follow_page_on_playhead_aux)
+                    and not self.mod_held[cfg.MOD.START]
+                    and not self.mod_held[cfg.MOD.END_STEP] then
+                    local desired_page = 1
+                    if len > cfg.NUM_STEPS then
+                        desired_page = self:track_step_to_page(st)
+                    end
+                    local changed = false
+                    if self.follow_page_on_playhead and desired_page ~= self:get_track_playhead_page(t) then
+                        self:set_track_playhead_page(t, desired_page)
+                        changed = true
+                    end
+                    if self.follow_page_on_playhead_aux_takeover and desired_page ~= self:get_track_view_page(t) then
+                        self:set_track_view_page(t, desired_page)
+                        changed = true
+                    end
+                    if self.follow_page_on_playhead_aux and desired_page ~= self:get_track_aux_page(t) then
+                        self:set_track_aux_page(t, desired_page)
+                        changed = true
+                    end
+                    if changed then
+                        self:request_redraw()
+                        self:request_aux_redraw()
+                    end
+                end
                 local gate_ticks = clamp(
                     tonumber(self.track_gate_ticks[t]) or
                     ((tc.type == "drum") and self.drum_gate_clocks or self.melody_gate_clocks), 1, 24)
@@ -156,12 +355,20 @@ function M.install(App)
                 local ratio_allows = step_data and self:step_ratio_allows_play(t, st)
                 local is_tie_step = step_data and step_data.source == "manual" and step_data.tie and ratio_allows
                 local should_play = ((step_data and ratio_allows and (not is_tie_step or not self.last_notes[t])) or has_fill)
+                local mute_recorded_once = (not has_fill) and step_data and step_data.source == "manual" and
+                    self:consume_recorded_step_skip_once(t, st)
+                local function send_note_on(note, vel, ch, ports)
+                    self:midi_note_on(note, vel, ch, ports)
+                    if self.clock_debug_log_note_on then
+                        self:clock_debug_log_note_on(t, st, note, ch, vel)
+                    end
+                end
 
                 if self.last_notes[t] and not is_tie_step then
                     self:note_off_last_for_track(t)
                 end
 
-                if not tr.muted and should_play then
+                if not tr.muted and should_play and not mute_recorded_once then
                     local output_ports = self.midi_out_ports_snapshot
                     local note_len_ticks = gate_ticks
                     if step_data and step_data.source == "manual" and not step_data.tie and not has_fill then
@@ -182,13 +389,13 @@ function M.install(App)
                         vel = self.fill_patterns[t][st].vel
                         if tc.type == "drum" then
                             local note = clamp(tc.note, 0, 127)
-                            self:midi_note_on(note, self:vel_to_midi(vel), tc.ch, output_ports)
+                            send_note_on(note, self:vel_to_midi(vel), tc.ch, output_ports)
                             self:trigger_crow(t, note)
                             self:schedule_note_off(t, note, tc.ch, note_len_ticks, output_ports)
                             self.last_notes[t] = { note = note, ch = tc.ch, ports = output_ports }
                         else
                             local note = self:get_pitch(t, self.fill_patterns[t][st].pitch, 0, pitch_ctx)
-                            self:midi_note_on(note, self:vel_to_midi(vel), tc.ch, output_ports)
+                            send_note_on(note, self:vel_to_midi(vel), tc.ch, output_ports)
                             self:trigger_crow(t, note)
                             self:schedule_note_off(t, note, tc.ch, note_len_ticks, output_ports)
                             self.last_notes[t] = { note = note, ch = tc.ch, ports = output_ports }
@@ -197,7 +404,7 @@ function M.install(App)
                         vel = step_data.vel
                         if tc.type == "drum" then
                             local note = clamp(tc.note, 0, 127)
-                            self:midi_note_on(note, self:vel_to_midi(vel), tc.ch, output_ports)
+                            send_note_on(note, self:vel_to_midi(vel), tc.ch, output_ports)
                             self:trigger_crow(t, note)
                             self:schedule_note_off(t, note, tc.ch, note_len_ticks, output_ports)
                             self.last_notes[t] = { note = note, ch = tc.ch, ports = output_ports }
@@ -210,7 +417,7 @@ function M.install(App)
                                 chord[#chord + 1] = self:get_pitch(t, d, spice_offset, pitch_ctx)
                             end
                             for _, note in ipairs(chord) do
-                                self:midi_note_on(note, self:vel_to_midi(vel), tc.ch, output_ports)
+                                send_note_on(note, self:vel_to_midi(vel), tc.ch, output_ports)
                                 self:trigger_crow(t, note)
                                 self:schedule_note_off(t, note, tc.ch, note_len_ticks, output_ports)
                                 notes[#notes + 1] = { note = note, ch = tc.ch, ports = output_ports }
@@ -222,7 +429,7 @@ function M.install(App)
                             local sp = self.spice[t] and self.spice[t][st]
                             local spice_offset = sp and sp.current or 0
                             local note = self:get_pitch(t, step_data.pitch, spice_offset, pitch_ctx)
-                            self:midi_note_on(note, self:vel_to_midi(vel), tc.ch, output_ports)
+                            send_note_on(note, self:vel_to_midi(vel), tc.ch, output_ports)
                             self:trigger_crow(t, note)
                             self:schedule_note_off(t, note, tc.ch, note_len_ticks, output_ports)
                             self.last_notes[t] = { note = note, ch = tc.ch, ports = output_ports }
@@ -248,20 +455,22 @@ function M.install(App)
                 end
             end
         end
+        return total_hits
     end
 
-    function App:advance_clock_tick()
+    function App:advance_clock(delta_ticks)
         local t_start
         if self.clock_debug_enabled then
             t_start = (util.time() or 0) * 1000
             self:clock_debug_on_tick_start(t_start)
         end
 
-        self.transport_clock = self.transport_clock + 1
-        self.clock_ticks = self.clock_ticks + 1
+        local ticks = math.max(tonumber(delta_ticks) or 1, 0.0001)
+        self.transport_clock = (tonumber(self.transport_clock) or 0) + ticks
+        self.clock_ticks = (tonumber(self.clock_ticks) or 0) + ticks
 
         local step_boundary = false
-        if self.clock_ticks >= cfg.MIDI_CLOCK_TICKS_PER_STEP then
+        while self.clock_ticks >= cfg.MIDI_CLOCK_TICKS_PER_STEP do
             self.clock_ticks = self.clock_ticks - cfg.MIDI_CLOCK_TICKS_PER_STEP
             local _, meta_reset = self:apply_pending_resets_on_step_boundary()
             self:update_repeat_window()
@@ -269,11 +478,19 @@ function M.install(App)
                 self:update_transpose_seq_clock()
             end
             step_boundary = true
+            if self.clock_debug_enabled and self.clock_debug_count then
+                self:clock_debug_count("boundaries", 1)
+            end
         end
 
-        self:play_tracks(1 / cfg.MIDI_CLOCK_TICKS_PER_STEP)
+        local hits = self:play_tracks(ticks / cfg.MIDI_CLOCK_TICKS_PER_STEP)
+        if self.clock_debug_enabled and self.clock_debug_count then
+            self:clock_debug_count("track_hits", hits)
+        end
         self:process_scheduled_note_offs()
-        self.grid_dirty = true
+        if hits > 0 and not step_boundary and self.request_main_grid_redraw then
+            self:request_main_grid_redraw()
+        end
 
         if step_boundary then
             if self.master_seq_len_enabled then
@@ -299,13 +516,20 @@ function M.install(App)
         if self.clock_debug_enabled and t_start then
             local total = ((util.time() or 0) * 1000) - t_start
             self:clock_debug_on_tick_end(total)
+            if self.clock_debug_maybe_write_rates then
+                self:clock_debug_maybe_write_rates((util.time() or 0) * 1000)
+            end
         end
+    end
+
+    function App:advance_clock_tick()
+        self:advance_clock(1)
     end
 
     function App:tick()
         if not self.playing then return end
         for _ = 1, cfg.MIDI_CLOCK_TICKS_PER_STEP do
-            self:advance_clock_tick()
+            self:advance_clock(1)
         end
     end
 
@@ -319,14 +543,34 @@ function M.install(App)
                 end
             end
         end
+        if type(self.midi_in_active_notes) == "table" then
+            for _, by_channel in pairs(self.midi_in_active_notes) do
+                if type(by_channel) == "table" then
+                    for _, by_note in pairs(by_channel) do
+                        if type(by_note) == "table" then
+                            for _, nd in pairs(by_note) do
+                                if nd and nd.note then
+                                    self:midi_note_off(nd.note, 0, nd.ch, nd.ports)
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
         self.last_notes = {}
         self.active_note_offs = {}
+        self.midi_in_active_notes = {}
+        self.midi_in_record_holds = {}
+        self.midi_record_skip_once = {}
     end
 
     function App:start()
         if self.playing then return end
         self.playing = true
         self:reset_playheads()
+        self:update_clock_tempo(self.tempo_bpm)
+        self:reset_external_clock_sync()
         if self.clock_debug_enabled then
             self:clock_debug_reset_state()
             self:clock_debug_log(string.format("[%s] start mode=%s tempo=%s",
@@ -349,22 +593,18 @@ function M.install(App)
             end)
         end
 
-        if not self.use_midi_clock then
-            if self.internal_clock_id then clock.cancel(self.internal_clock_id) end
-            self.internal_clock_id = clock.run(function()
-                while self.playing and not self.use_midi_clock do
-                    clock.sync(1 / 24)
-                    self:run_internal_clock_iteration()
-                end
-            end)
-        end
+        self:ensure_transport_scheduler_running()
         self:request_redraw()
         self:request_aux_redraw()
     end
 
-    function App:run_internal_clock_iteration()
+    function App:run_internal_clock_iteration(delta_ticks)
         local ok, err = pcall(function()
-            self:advance_clock_tick()
+            if delta_ticks ~= nil then
+                self:advance_clock(delta_ticks)
+            else
+                self:advance_clock_tick()
+            end
         end)
         if not ok then
             local line = string.format("[%s] transport error: %s", os.date("%H:%M:%S"), tostring(err))
@@ -387,10 +627,15 @@ function M.install(App)
             clock.cancel(self.internal_clock_id)
             self.internal_clock_id = nil
         end
+        if self.transport_scheduler_id then
+            clock.cancel(self.transport_scheduler_id)
+            self.transport_scheduler_id = nil
+        end
         if self.midi_clock_out_id then
             clock.cancel(self.midi_clock_out_id)
             self.midi_clock_out_id = nil
         end
+        self:reset_external_clock_sync()
         self:stop_all_notes()
         self:request_redraw()
         self:request_aux_redraw()
@@ -404,6 +649,10 @@ function M.install(App)
             if self.internal_clock_id then
                 clock.cancel(self.internal_clock_id)
                 self.internal_clock_id = nil
+            end
+            if self.transport_scheduler_id then
+                clock.cancel(self.transport_scheduler_id)
+                self.transport_scheduler_id = nil
             end
             if self.midi_clock_out_id then
                 clock.cancel(self.midi_clock_out_id)

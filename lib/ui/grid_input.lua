@@ -157,6 +157,8 @@ function M.install(App)
     function App:is_modifier_dynamic_row_active()
         if self.mod_held[cfg.MOD.OCTAVE] and self.sel_track then return true end
         if self.mod_held[cfg.MOD.TRANSPOSE] then return true end
+        if self.mod_held[cfg.MOD.START] and not self.mod_held[cfg.MOD.END_STEP] and not self.speed_mode then return true end
+        if self.mod_held[cfg.MOD.END_STEP] and not self.mod_held[cfg.MOD.START] and not self.speed_mode then return true end
         if self.mod_held[cfg.MOD.RAND_NOTES] or self.mod_held[cfg.MOD.RAND_STEPS] then return true end
         if self.mod_held[cfg.MOD.BEAT_RPT] then return true end
         if self.mod_held[cfg.MOD.SPICE] then return true end
@@ -241,7 +243,37 @@ function M.install(App)
     end
 
     function App:handle_grid_key(port, x, y, z)
-        self:invalidate_step_cache()
+        local function infer_cache_track()
+            if port == self.aux_grid_port then
+                return clamp(tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+            end
+            if port ~= self.main_grid_port then return nil end
+
+            local mod_row = self:get_main_mod_row()
+            local dyn_row = self:get_main_dynamic_row()
+            local route, route_track = self:route_main_grid_event(x, y, mod_row, dyn_row)
+
+            if route == "realtime" then
+                return clamp(tonumber(route_track) or tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+            elseif route == "takeover" or route == "transpose_takeover" then
+                return clamp(tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+            elseif route == "overview" then
+                local t = self:row_to_track(y)
+                if t and t >= 1 and t <= cfg.NUM_TRACKS then return t end
+                return nil
+            elseif route == "dynamic" then
+                return clamp(tonumber(self.sel_track) or ((self.held and self.held.t) or 1), 1, cfg.NUM_TRACKS)
+            end
+            return nil
+        end
+
+        local cache_track = infer_cache_track()
+        if cache_track then
+            self:invalidate_step_cache(cache_track)
+        elseif port == self.main_grid_port and y == self:get_main_mod_row() then
+            self:invalidate_step_cache()
+        end
+
         if port == self.aux_grid_port then
             self:handle_aux_grid_event(x, y, z)
             return
@@ -254,8 +286,9 @@ function M.install(App)
     function App:apply_held_gate_span(track, anchor_step, target_step, preserve_step)
         local t = clamp(tonumber(track) or 1, 1, cfg.NUM_TRACKS)
         if not self.track_hold_tie_len_enabled[t] then return end
-        local from_step = clamp(tonumber(anchor_step) or 1, 1, cfg.NUM_STEPS)
-        local to_step = clamp(tonumber(target_step) or 1, 1, cfg.NUM_STEPS)
+        local step_limit = self:get_track_step_limit()
+        local from_step = clamp(tonumber(anchor_step) or 1, 1, step_limit)
+        local to_step = clamp(tonumber(target_step) or 1, 1, step_limit)
         if from_step == to_step then return end
 
         local tr = self:ensure_track_state(t)
@@ -277,10 +310,10 @@ function M.install(App)
                     if type(src_pitch) == "table" then
                         tr.pitches[s] = deep_copy_table(src_pitch)
                     else
-                        tr.pitches[s] = { clamp(tonumber(src_pitch) or 1, 1, 16) }
+                        tr.pitches[s] = { clamp(tonumber(src_pitch) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE) }
                     end
                 elseif tc.type ~= "drum" then
-                    tr.pitches[s] = clamp(tonumber(src_pitch) or 1, 1, 16)
+                    tr.pitches[s] = clamp(tonumber(src_pitch) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
                 end
             end
         end
@@ -410,7 +443,8 @@ function M.install(App)
     end
 
     function App:clear_track(t)
-        for s = 1, cfg.NUM_STEPS do
+        local step_limit = self:get_track_step_limit()
+        for s = 1, step_limit do
             self.tracks[t].gates[s] = false
             if self.track_cfg[t].type == "poly" then self.tracks[t].pitches[s] = { 1 } else self.tracks[t].pitches[s] = 1 end
             self.tracks[t].vels[s] = self:get_track_default_vel_level(t)
@@ -440,7 +474,7 @@ function M.install(App)
         elseif mod == cfg.MOD.START then
             self.tracks[t].start_step = 1
         elseif mod == cfg.MOD.END_STEP then
-            self.tracks[t].end_step = 16
+            self.tracks[t].end_step = cfg.NUM_STEPS
         elseif mod == cfg.MOD.OCTAVE then
             self.tracks[t].octave = 0
         elseif mod == cfg.MOD.TRANSPOSE then
@@ -474,8 +508,19 @@ function M.install(App)
         local t = clamp(tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
         self.sel_track = t
 
+        if self.mod_held[cfg.MOD.OCTAVE] and self.mod_held[cfg.MOD.SHIFT] then
+            if z == 1 then
+                self.track_edit_octave_page[t] = clamp(x - 8, -7, 8)
+                self:flash_mod_applied(cfg.MOD.OCTAVE, "edit oct " .. tostring(self.track_edit_octave_page[t]))
+                self:request_redraw()
+                self:request_aux_redraw()
+            end
+            return
+        end
+
         local tr = self:ensure_track_state(t)
         local tc = self.track_cfg[t]
+        x = self:get_track_visible_step(t, x, self:get_track_aux_page(t))
         local prev_held = self.held
 
         if z == 0 then
@@ -489,7 +534,7 @@ function M.install(App)
         local did_push = false
         local function ensure_push()
             if not did_push then
-                self:push_undo_state()
+                self:push_undo_state("grid_step_edit")
                 did_push = true
             end
         end
@@ -537,7 +582,7 @@ function M.install(App)
             applied_value = self:apply_pending_ratio_to_step(t, x)
         elseif self.mod_held[cfg.MOD.RATIOS] and tc.type == "poly" then
             ensure_push()
-            tr.pitches[x] = self:poly_toggle_aux_degree(t, self:poly_active_pitches(tr, x), self:aux_row_to_degree(y))
+            tr.pitches[x] = self:poly_toggle_aux_degree(t, self:poly_active_pitches(tr, x), self:aux_row_to_degree(y, t))
             tr.gates[x] = (#tr.pitches[x] > 0)
             if tr.gates[x] then
                 tr.vels[x] = clamp(tonumber(tr.vels[x]) or self:get_track_default_vel_level(t), 1, 15)
@@ -549,12 +594,12 @@ function M.install(App)
             ensure_push()
             tr.gates[x] = true
             tr.vels[x] = clamp(tonumber(tr.vels[x]) or self:get_track_default_vel_level(t), 1, 15)
-            tr.pitches[x] = self:aux_row_to_degree(y)
+            tr.pitches[x] = self:aux_row_to_degree(y, t)
             applied_value = self:apply_pending_ratio_to_step(t, x)
         elseif self:mod_active(cfg.MOD.TEMP) and self:is_temp_button_fill_mode() then
             ensure_push()
             local fill_vel = self:aux_row_to_vel_level(y)
-            local fill_pitch = self:aux_row_to_degree(y)
+            local fill_pitch = self:aux_row_to_degree(y, t)
             if self.fill_patterns[t][x] then
                 self.fill_patterns[t][x] = nil
                 applied_value = "off"
@@ -569,7 +614,7 @@ function M.install(App)
             end
         elseif self:mod_active(cfg.MOD.TEMP) then
             ensure_push()
-            local degree = self:aux_row_to_degree(y)
+            local degree = self:aux_row_to_degree(y, t)
             local level = self:aux_row_to_vel_level(y)
             local was_off = not tr.gates[x]
             if not tr.gates[x] then
@@ -610,14 +655,14 @@ function M.install(App)
             end
         elseif tc.type == "poly" then
             ensure_push()
-            tr.pitches[x] = self:poly_toggle_aux_degree(t, self:poly_active_pitches(tr, x), self:aux_row_to_degree(y))
+            tr.pitches[x] = self:poly_toggle_aux_degree(t, self:poly_active_pitches(tr, x), self:aux_row_to_degree(y, t))
             tr.gates[x] = (#tr.pitches[x] > 0)
             if tr.gates[x] then
                 tr.vels[x] = clamp(tonumber(tr.vels[x]) or self:get_track_default_vel_level(t), 1, 15)
             end
         else
             ensure_push()
-            local next_degree = self:aux_row_to_degree(y)
+            local next_degree = self:aux_row_to_degree(y, t)
             if tr.gates[x] and self:get_closest_aux_degree(t, tr.pitches[x]) == next_degree then
                 tr.gates[x] = false
                 if tr.ties then tr.ties[x] = false end
@@ -687,6 +732,7 @@ function M.install(App)
             if y >= 1 and y <= takeover_rows then
                 local t = self.sel_track or 1
                 self.sel_track = t
+                x = self:get_track_visible_step(t, x)
                 local tr = self.tracks[t]
                 local tc = self.track_cfg[t]
                 local prev_held = self.held
@@ -695,7 +741,7 @@ function M.install(App)
                     local did_push = false
                     local function ensure_push()
                         if not did_push then
-                            self:push_undo_state()
+                            self:push_undo_state("grid_step_edit")
                             did_push = true
                         end
                     end
@@ -738,7 +784,7 @@ function M.install(App)
                         applied_value = "track"
                     elseif self.mod_held[cfg.MOD.RATIOS] then
                         ensure_push()
-                        local degree = self:main_takeover_row_to_degree(y)
+                        local degree = self:main_takeover_row_to_degree(y, t)
                         local level = self:main_takeover_row_to_vel_level(y)
                         if tc.type == "drum" then
                             tr.gates[x] = true
@@ -762,7 +808,7 @@ function M.install(App)
                     elseif self:mod_active(cfg.MOD.TEMP) and self:is_temp_button_fill_mode() then
                         ensure_push()
                         local fill_vel = clamp(16 - y, 1, 15)
-                        local fill_pitch = clamp(16 - y, 1, 16)
+                        local fill_pitch = self:main_takeover_row_to_degree(y, t)
                         if self.fill_patterns[t][x] then
                             self.fill_patterns[t][x] = nil
                             applied_value = "off"
@@ -778,7 +824,7 @@ function M.install(App)
                         end
                     elseif self:mod_active(cfg.MOD.TEMP) then
                         ensure_push()
-                        local degree = self:main_takeover_row_to_degree(y)
+                        local degree = self:main_takeover_row_to_degree(y, t)
                         local level = self:main_takeover_row_to_vel_level(y)
                         local was_off = not tr.gates[x]
                         if not tr.gates[x] then
@@ -813,13 +859,15 @@ function M.install(App)
                         if y == dyn_row and not self:is_main_grid_128() then
                             if tr.gates[x] then
                                 tr.gates[x] = false
+                                if tr.ties then tr.ties[x] = false end
                             else
                                 tr.gates[x] = true
                                 tr.vels[x] = self:get_track_default_vel_level(t)
                             end
                         else
-                            if tr.gates[x] then
-                                tr.vels[x] = level
+                            if tr.gates[x] and tr.vels[x] == level then
+                                tr.gates[x] = false
+                                if tr.ties then tr.ties[x] = false end
                             else
                                 tr.gates[x] = true
                                 tr.vels[x] = level
@@ -827,7 +875,7 @@ function M.install(App)
                         end
                     else
                         ensure_push()
-                        local degree = self:main_takeover_row_to_degree(y)
+                        local degree = self:main_takeover_row_to_degree(y, t)
                         if tc.type == "poly" then
                             tr.pitches[x] = self:poly_toggle_pitch(self:poly_active_pitches(tr, x), degree)
                             tr.gates[x] = (#tr.pitches[x] > 0)
@@ -877,12 +925,18 @@ function M.install(App)
 
         local t = self:row_to_track(y)
         if t and t >= 1 and t <= cfg.NUM_TRACKS then
+            local page_override = self:get_track_main_grid_page(t)
+            if (self.mod_held[cfg.MOD.START] or self.mod_held[cfg.MOD.END_STEP]) and not self.speed_mode then
+                page_override = self:get_track_view_page(self.sel_track or t)
+            end
+            x = self:get_track_visible_step(t, x, page_override)
             local prev_held = self.held
+            local prev_sel_track = self.sel_track
             if z == 1 then
                 local did_push = false
                 local function ensure_push()
                     if not did_push then
-                        self:push_undo_state()
+                        self:push_undo_state("grid_step_edit")
                         did_push = true
                     end
                 end
@@ -946,6 +1000,8 @@ function M.install(App)
                     self.spice[t][x] = nil
                     self.sel_track = t
                 elseif self:any_mod_active() then
+                    self.sel_track = t
+                elseif self.track_select_focus_mode and prev_sel_track ~= t then
                     self.sel_track = t
                 else
                     ensure_push()
