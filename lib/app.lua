@@ -103,8 +103,17 @@ function App.new()
     self.external_clock_screen_refresh_interval = 0.25
     self.external_clock_last_time = nil
     self.external_clock_bpm_estimate = nil
+    self.external_clock_display_bpm = nil
+    self.external_clock_display_interval = nil
+    self.external_clock_display_interval_samples = {}
+    self.external_clock_display_last_interval = nil
     self.external_clock_last_tempo_update = nil
     self.external_clock_last_screen_refresh_ms = 0
+    self.external_clock_input_ppqn = 24
+    self.external_clock_interpolation_ppqn = 96
+    self.external_clock_subtick_id = nil
+    self.external_clock_subtick_generation = 0
+    self.external_clock_subtick_progress = 0
     self.transpose_mode = "semitone"
     self.transpose_takeover_mode = false
     self.transpose_seq_enabled = false

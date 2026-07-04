@@ -51,7 +51,7 @@ function M.install(App)
         local step_ticks = tonumber(cfg.MIDI_CLOCK_TICKS_PER_STEP) or 6
         local beat_ticks = step_ticks * 4
         self:clock_debug_log(string.format(
-            "[%s] note_on tick=%.3f step_mod=%.3f beat_mod=%.3f track=%d counter=%d step=%d note=%d ch=%d vel=%d swing=%d profile=%s",
+            "[%s] note_on tick=%.3f step_mod=%.3f beat_mod=%.3f track=%d counter=%d step=%d note=%d ch=%d vel=%d swing=%d profile=%s tempo=%.3f ext_bpm=%.3f int_ppqn=%d ext_in_ppqn=%d interp_ppqn=%d",
             os.date("%H:%M:%S"),
             tick,
             tick % step_ticks,
@@ -63,7 +63,27 @@ function M.install(App)
             tonumber(ch) or 0,
             tonumber(vel) or 0,
             tonumber(self.global_swing_percent) or 50,
-            tostring(self.global_swing_profile or "linear")))
+            tostring(self.global_swing_profile or "linear"),
+            tonumber(self.tempo_bpm) or 0,
+            tonumber(self.external_clock_bpm_estimate) or 0,
+            tonumber(self.transport_scheduler_ppqn) or 0,
+            tonumber(self.external_clock_input_ppqn) or 24,
+            tonumber(self.external_clock_interpolation_ppqn) or 24))
+    end
+
+    function App:clock_debug_log_setting(name, value)
+        if not self.clock_debug_enabled then return end
+        self:clock_debug_log(string.format(
+            "[%s] setting %s=%s tempo=%.3f swing=%d profile=%s int_ppqn=%d ext_in_ppqn=%d interp_ppqn=%d",
+            os.date("%H:%M:%S"),
+            tostring(name or ""),
+            tostring(value or ""),
+            tonumber(self.tempo_bpm) or 0,
+            tonumber(self.global_swing_percent) or 50,
+            tostring(self.global_swing_profile or "linear"),
+            tonumber(self.transport_scheduler_ppqn) or 0,
+            tonumber(self.external_clock_input_ppqn) or 24,
+            tonumber(self.external_clock_interpolation_ppqn) or 24))
     end
 
     function App:_clock_debug_flush()
@@ -83,7 +103,10 @@ function M.install(App)
         local prev = self.clock_debug_prev_internal_ms
         if prev then
             local dt = t_start - prev
-            local ppqn = self.use_midi_clock and 24 or math.max(tonumber(self.transport_scheduler_ppqn) or 24, 24)
+            local ext_input_ppqn = math.max(tonumber(self.external_clock_input_ppqn) or 24, 24)
+            local ppqn = self.use_midi_clock
+                and math.max(tonumber(self.external_clock_interpolation_ppqn) or ext_input_ppqn, ext_input_ppqn)
+                or math.max(tonumber(self.transport_scheduler_ppqn) or 24, 24)
             local bpm = (self.use_midi_clock and tonumber(self.external_clock_bpm_estimate)) or
                 tonumber(self.tempo_bpm) or 120
             local expected = 60000 / (bpm * ppqn)

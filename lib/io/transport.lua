@@ -72,10 +72,14 @@ function M.install(App)
 
     function App:on_external_clock_pulse()
         local now = util.time() or 0
-        if self.external_clock_last_time and self.external_clock_last_time > 0 then
+        local interval = nil
+        if self.external_clock_last_time ~= nil then
             local dt = now - self.external_clock_last_time
             if dt > 0 and dt < 1 then
-                local instant_bpm = clamp(60 / (dt * 24), 20, 300)
+                interval = dt
+                self.external_clock_display_interval = dt
+                local input_ppqn = self:get_external_clock_input_ppqn()
+                local instant_bpm = clamp(60 / (dt * input_ppqn), 20, 300)
                 local smooth = clamp(tonumber(self.external_clock_smooth) or 0.25, 0.01, 1)
                 local prev = tonumber(self.external_clock_bpm_estimate) or instant_bpm
                 local blended = prev + ((instant_bpm - prev) * smooth)
@@ -84,17 +88,87 @@ function M.install(App)
                 local last_update = tonumber(self.external_clock_last_tempo_update)
                 if not last_update or min_interval == 0 or (now - last_update) >= min_interval then
                     self.external_clock_last_tempo_update = now
+                    if self.use_midi_clock and self.request_redraw then self:request_redraw() end
                 end
             end
         end
         self.external_clock_last_time = now
+        return interval
+    end
+
+    function App:get_external_clock_input_ppqn()
+        return math.max(tonumber(self.external_clock_input_ppqn) or 24, 24)
+    end
+
+    function App:get_external_clock_pulse_delta()
+        return 24 / self:get_external_clock_input_ppqn()
+    end
+
+    function App:get_external_clock_subdivisions()
+        local input_ppqn = self:get_external_clock_input_ppqn()
+        local target_ppqn = math.max(tonumber(self.external_clock_interpolation_ppqn) or input_ppqn, input_ppqn)
+        return math.max(1, math.floor((target_ppqn / input_ppqn) + 0.5))
+    end
+
+    function App:cancel_external_clock_subtick_scheduler()
+        self.external_clock_subtick_generation = (tonumber(self.external_clock_subtick_generation) or 0) + 1
+        if self.external_clock_subtick_id then
+            clock.cancel(self.external_clock_subtick_id)
+            self.external_clock_subtick_id = nil
+        end
+    end
+
+    function App:schedule_external_clock_subticks(interval)
+        local subdivisions = self:get_external_clock_subdivisions()
+        if subdivisions <= 1 then return end
+        local pulse_interval = tonumber(interval) or 0
+        if pulse_interval <= 0 or pulse_interval >= 1 then return end
+
+        self:cancel_external_clock_subtick_scheduler()
+        local generation = tonumber(self.external_clock_subtick_generation) or 0
+        local sleep_time = pulse_interval / subdivisions
+        local delta = self:get_external_clock_pulse_delta() / subdivisions
+        local max_progress = self:get_external_clock_pulse_delta() - delta
+        self.external_clock_subtick_id = clock.run(function()
+            for _ = 1, subdivisions - 1 do
+                clock.sleep(sleep_time)
+                if generation ~= self.external_clock_subtick_generation then return end
+                if not self.playing or not self.use_midi_clock then return end
+                self.external_clock_subtick_progress = math.min(
+                    (tonumber(self.external_clock_subtick_progress) or 0) + delta,
+                    max_progress)
+                self:run_internal_clock_iteration(delta)
+            end
+            if generation == self.external_clock_subtick_generation then
+                self.external_clock_subtick_id = nil
+            end
+        end)
+    end
+
+    function App:advance_external_clock_pulse(interval)
+        local subdivisions = self:get_external_clock_subdivisions()
+        local pulse_delta = self:get_external_clock_pulse_delta()
+        if subdivisions <= 1 then
+            self:run_internal_clock_iteration(pulse_delta)
+            return
+        end
+
+        self:cancel_external_clock_subtick_scheduler()
+        local subtick_delta = pulse_delta / subdivisions
+        local progress = clamp(tonumber(self.external_clock_subtick_progress) or 0, 0, pulse_delta - subtick_delta)
+        self.external_clock_subtick_progress = 0
+        self:run_internal_clock_iteration(math.max(subtick_delta, pulse_delta - progress))
+        self:schedule_external_clock_subticks(interval)
     end
 
     function App:reset_external_clock_sync()
+        self:cancel_external_clock_subtick_scheduler()
         self.external_clock_last_time = nil
         self.external_clock_bpm_estimate = nil
+        if self.reset_external_clock_display_tempo then self:reset_external_clock_display_tempo() end
         self.external_clock_last_tempo_update = nil
         self.external_clock_last_screen_refresh_ms = 0
+        self.external_clock_subtick_progress = 0
     end
 
     function App:ensure_transport_scheduler_running()

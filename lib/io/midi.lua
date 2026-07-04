@@ -821,9 +821,11 @@ function M.install(App)
         end
 
         if status == 248 then
-            if self.use_midi_clock and self.playing then
-                self:on_external_clock_pulse()
-                self:advance_clock_tick()
+            if self.use_midi_clock then
+                local interval = self:on_external_clock_pulse()
+                if self.playing then
+                    self:advance_external_clock_pulse(interval)
+                end
             end
             return
         elseif status == 250 then
@@ -857,6 +859,7 @@ function M.install(App)
                 clock.cancel(self.transport_scheduler_id)
                 self.transport_scheduler_id = nil
             end
+            self:reset_external_clock_sync()
             self:clear_realtime_row_holds()
             self:stop_all_notes()
             self:request_redraw()

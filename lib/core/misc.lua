@@ -89,6 +89,15 @@ function M.install(App)
         else
             self.key_held[n] = nil
         end
+        if n == 1 then
+            if z == 0 and self.status_message == "swing" then
+                self.status_message = nil
+                self.status_value = nil
+                self.status_mod_id = nil
+                self.status_message_invert = false
+            end
+            self:request_redraw()
+        end
         if z == 0 then return end
 
         if (n == 2 and self.key_held[3]) or (n == 3 and self.key_held[2]) then
@@ -104,6 +113,18 @@ function M.install(App)
     end
 
     function App:enc(n, d)
+        if self.key_held[1] then
+            if n == 2 then
+                params:delta("permute_global_swing", d)
+                self:request_redraw()
+                return
+            elseif n == 3 then
+                params:delta("permute_global_swing_profile", d)
+                self:request_redraw()
+                return
+            end
+        end
+
         if n == 2 then
             params:delta("permute_tempo", d)
         elseif n == 3 then

@@ -12,21 +12,58 @@ local ARC_VARIANCE_MODES = H.ARC_VARIANCE_MODES
 local ARC_CADENCE_SHAPES = H.ARC_CADENCE_SHAPES
 local ARC_DELTA_THRESHOLDS = H.ARC_DELTA_THRESHOLDS
 local TRACK_SELECT_MOD = H.TRACK_SELECT_MOD
+local swing_profiles = include("lib/sequencer/swing_profiles")
 
 local M = {}
 
 function M.install(App)
-    function App:get_display_tempo()
-        if self.use_midi_clock and params and params.get then
-            local ok, tempo = pcall(function() return params:get("clock_tempo") end)
-            tempo = ok and tonumber(tempo) or nil
-            if tempo and tempo > 0 then return tempo end
+    function App:reset_external_clock_display_tempo()
+        self.external_clock_display_bpm = nil
+        self.external_clock_display_interval = nil
+        self.external_clock_display_interval_samples = {}
+        self.external_clock_display_last_interval = nil
+    end
+
+    function App:get_averaged_external_display_tempo(interval)
+        local raw_interval = tonumber(interval)
+        if not raw_interval or raw_interval <= 0 then return nil end
+
+        local samples = self.external_clock_display_interval_samples
+        local last_interval = tonumber(self.external_clock_display_last_interval)
+        if type(samples) ~= "table" or #samples == 0 or
+            (last_interval and math.abs(raw_interval - last_interval) > (last_interval * 0.08)) then
+            samples = {}
+            self.external_clock_display_interval_samples = samples
         end
+
+        if not last_interval or math.abs(raw_interval - last_interval) > 0.0000001 then
+            samples[#samples + 1] = raw_interval
+            while #samples > 8 do table.remove(samples, 1) end
+            self.external_clock_display_last_interval = raw_interval
+        end
+
+        local sum = 0
+        for _, sample in ipairs(samples) do sum = sum + sample end
+        local avg_interval = (#samples > 0) and (sum / #samples) or raw_interval
+        local input_ppqn = self.get_external_clock_input_ppqn and self:get_external_clock_input_ppqn() or 24
+        self.external_clock_display_bpm = 60 / (avg_interval * input_ppqn)
+        return self.external_clock_display_bpm
+    end
+
+    function App:get_display_tempo()
         if self.use_midi_clock then
+            local averaged = self:get_averaged_external_display_tempo(self.external_clock_display_interval)
+            if averaged and averaged > 0 then return averaged end
             local estimate = tonumber(self.external_clock_bpm_estimate)
             if estimate and estimate > 0 then return estimate end
+        elseif self.external_clock_display_bpm then
+            self:reset_external_clock_display_tempo()
         end
         return tonumber(self.tempo_bpm) or 120
+    end
+
+    function App:format_display_tempo()
+        return string.format("%d", math.floor((tonumber(self:get_display_tempo()) or 120) + 0.5))
     end
 
     function App:get_active_screen_orientation()
@@ -180,6 +217,44 @@ function M.install(App)
         return true
     end
 
+    function App:get_swing_profile_label()
+        local profile = self.global_swing_profile or "linear"
+        return ((swing_profiles.labels or {})[profile]) or profile
+    end
+
+    function App:draw_swing_selection_screen(invert)
+        local w, _ = self:get_screen_canvas_size()
+        if invert then
+            screen.level(15)
+            screen.rect(0, 0, w, 64)
+            screen.fill()
+            screen.level(0)
+        else
+            screen.level(15)
+        end
+
+        screen.font_size(8)
+        screen.move(0, 12)
+        screen.text("swing")
+
+        screen.font_size(16)
+        local amount = tostring(tonumber(self.global_swing_percent) or 50) .. "%"
+        local aw = screen.text_extents(amount)
+        screen.move(math.floor((w - aw) / 2), 34)
+        screen.text(amount)
+
+        screen.font_size(8)
+        local profile = self:get_swing_profile_label()
+        local pw = screen.text_extents(profile)
+        screen.move(math.floor((w - pw) / 2), 48)
+        screen.text(profile)
+
+        screen.level(invert and 4 or 6)
+        screen.move(0, 62)
+        screen.text("E2 amount  E3 profile")
+        screen.font_size(8)
+    end
+
     function App:apply_screen_update()
         screen.update()
     end
@@ -220,7 +295,13 @@ function M.install(App)
         local title = self.realtime_play_mode and "permute - live (cw90)" or "permute - cw90"
         row(title, 15)
 
-        if self.status_message then
+        if self.key_held[1] then
+            row("swing", 15)
+            row("amount: " .. tostring(tonumber(self.global_swing_percent) or 50) .. "%", 12)
+            row("profile: " .. self:get_swing_profile_label(), 10)
+            row("E2 amount", 6)
+            row("E3 profile", 6)
+        elseif self.status_message then
             local override_name, _, _ = self:get_mod_screen_override()
             if override_name then
                 draw_rotated_icon(function(cx, cy)
@@ -271,7 +352,7 @@ function M.install(App)
             end
         else
             row("state: " .. (self.playing and "playing" or "stopped"), 10)
-            row("tempo: " .. string.format("%d", self:get_display_tempo()), 10)
+            row("tempo: " .. self:format_display_tempo(), 10)
             row("scale: " .. tostring(self.scale_type), 10)
             local sel = self.sel_track and tostring(self.sel_track) or "-"
             local page = self.sel_track and tostring(self:get_track_main_grid_page(self.sel_track)) or "-"
@@ -310,7 +391,9 @@ function M.install(App)
             return
         end
 
-        if self.status_message then
+        if self.key_held[1] then
+            self:draw_swing_selection_screen(false)
+        elseif self.status_message then
             local override_name, override_label, _ = self:get_mod_screen_override()
             if override_name then
                 if not self:draw_special_icon_screen(override_name, override_label, self.status_value, self.status_message_invert) then
@@ -394,7 +477,7 @@ function M.install(App)
                 screen.move(0, y2)
                 screen.text("state: " .. (self.playing and "playing" or "stopped"))
                 screen.move(0, y3)
-                screen.text("tempo: " .. string.format("%d", self:get_display_tempo()))
+                screen.text("tempo: " .. self:format_display_tempo())
                 screen.move(0, y4)
                 screen.text("scale: " .. self.scale_type)
                 screen.move(0, y5)
@@ -412,7 +495,7 @@ function M.install(App)
                 screen.text("state: " .. (self.playing and "playing" or "stopped"))
 
                 screen.move(0, y3)
-                screen.text("tempo: " .. string.format("%d", self:get_display_tempo()) .. "  scale: " .. self.scale_type)
+                screen.text("tempo: " .. self:format_display_tempo() .. "  scale: " .. self.scale_type)
 
                 screen.move(0, y4)
                 local sel = self.sel_track and tostring(self.sel_track) or "-"

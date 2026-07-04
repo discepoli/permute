@@ -30,6 +30,8 @@ local DEFAULT_SETUP_BASE_IDS = {
     "permute_global_swing",
     "permute_reset_timing",
     "permute_ext_clock",
+    "permute_ext_clock_input_ppqn",
+    "permute_ext_clock_ppqn",
     "permute_send_clock_out",
     "permute_send_start_stop_out",
     "permute_clock_debug",
@@ -136,7 +138,7 @@ function M.setup(app)
     local section_count = 8
     local spacer_count = section_count - 1
     local permute_section_count = (params and params.add_separator) and (section_count + spacer_count) or 0
-    params:add_group("permute_seq", "permute", 46 + permute_section_count)
+    params:add_group("permute_seq", "permute", 49 + permute_section_count)
 
     add_permute_section("permute_section_music", "music")
 
@@ -188,6 +190,9 @@ function M.setup(app)
             app.tempo_bpm = v
         end
         params:set("clock_tempo", v)
+        if app.clock_debug_log_setting then
+            app:clock_debug_log_setting("tempo", tonumber(v) or cfg.DEFAULT_TEMPO_BPM)
+        end
         app:request_redraw()
     end)
 
@@ -225,6 +230,28 @@ function M.setup(app)
                 os.date("%H:%M:%S"),
                 app.use_midi_clock and "external" or "internal"))
         end
+    end)
+
+    local ext_clock_input_ppqn_values = { 24, 48, 96, 192 }
+    params:add_option("permute_ext_clock_input_ppqn", "incoming clock ppqn", { "24", "48", "96", "192" }, 1)
+    params:set_action("permute_ext_clock_input_ppqn", function(v)
+        local idx = clamp(tonumber(v) or 1, 1, #ext_clock_input_ppqn_values)
+        app.external_clock_input_ppqn = ext_clock_input_ppqn_values[idx] or 24
+        if app.clock_debug_log_setting then
+            app:clock_debug_log_setting("incoming_clock_ppqn", app.external_clock_input_ppqn)
+        end
+        app:reset_external_clock_sync()
+    end)
+
+    local ext_clock_ppqn_values = { 24, 48, 96, 192 }
+    params:add_option("permute_ext_clock_ppqn", "interp clock ppqn", { "24", "48", "96", "192" }, 3)
+    params:set_action("permute_ext_clock_ppqn", function(v)
+        local idx = clamp(tonumber(v) or 3, 1, #ext_clock_ppqn_values)
+        app.external_clock_interpolation_ppqn = ext_clock_ppqn_values[idx] or 96
+        if app.clock_debug_log_setting then
+            app:clock_debug_log_setting("interp_clock_ppqn", app.external_clock_interpolation_ppqn)
+        end
+        app:reset_external_clock_sync()
     end)
 
     params:add_option("permute_send_clock_out", "send midi clock out", { "off", "on" }, 2)
@@ -324,11 +351,17 @@ function M.setup(app)
     params:set_action("permute_global_swing_profile", function(v)
         local idx = clamp(tonumber(v) or default_swing_profile_index, 1, #swing_profile_keys)
         app.global_swing_profile = swing_profile_keys[idx] or swing_profile_keys[1] or "mpc1000"
+        if app.clock_debug_log_setting then
+            app:clock_debug_log_setting("swing_profile", app.global_swing_profile)
+        end
     end)
 
     params:add_number("permute_global_swing", "global swing %", 25, 75, 50)
     params:set_action("permute_global_swing", function(v)
         app.global_swing_percent = clamp(tonumber(v) or 50, 25, 75)
+        if app.clock_debug_log_setting then
+            app:clock_debug_log_setting("swing_percent", app.global_swing_percent)
+        end
     end)
 
     params:add_option("permute_beat_repeat_mode", "b. repeat mode", BEAT_REPEAT_MODES, 1)
