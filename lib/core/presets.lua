@@ -58,6 +58,12 @@ function M.install(App)
         end
         self:invalidate_aux_degree_cache()
 
+        for t = 1, cfg.NUM_TRACKS do
+            if self.track_cfg[t] and self.track_cfg[t].type == "split" then
+                self:ensure_split_track_state(t)
+            end
+        end
+
         if sync_params and params and params.set then
             local was_suspended = self.suspend_history
             self.suspend_history = true
@@ -65,7 +71,7 @@ function M.install(App)
                 local tc = self.track_cfg[t]
                 if tc then
                     local gid = "permute_track_" .. t
-                    local type_idx = (tc.type == "drum") and 1 or ((tc.type == "mono") and 2 or 3)
+                    local type_idx = (tc.type == "drum") and 1 or ((tc.type == "mono") and 2 or ((tc.type == "poly") and 3 or 4))
                     pcall(function() params:set(gid .. "_type", type_idx) end)
                     pcall(function() params:set(gid .. "_ch", clamp(tonumber(tc.ch) or 1, 1, 16)) end)
                     pcall(function() params:set(gid .. "_note", clamp(tonumber(tc.note) or 60, 0, 127)) end)
@@ -86,7 +92,7 @@ function M.install(App)
             local ok_type, loaded_type = pcall(function() return params:get(gid .. "_type") end)
             if ok_type and loaded_type ~= nil then type_idx = tonumber(loaded_type) or 1 end
             track_cfg[t] = {
-                type = (type_idx == 3 and "poly") or (type_idx == 2 and "mono") or "drum",
+                type = (type_idx == 4 and "split") or (type_idx == 3 and "poly") or (type_idx == 2 and "mono") or "drum",
                 ch = clamp(tonumber(params:get(gid .. "_ch")) or 1, 1, 16),
                 note = clamp(tonumber(params:get(gid .. "_note")) or 60, 0, 127)
             }
@@ -219,6 +225,11 @@ function M.install(App)
             transpose_seq_step = self.transpose_seq_step,
             track_gate_ticks = deep_copy_table(self.track_gate_ticks),
             track_hold_tie_len_enabled = deep_copy_table(self.track_hold_tie_len_enabled),
+            split_gate_pos = deep_copy_table(self.split_gate_pos),
+            split_pitch_pos = deep_copy_table(self.split_pitch_pos),
+            split_gate_substep = deep_copy_table(self.split_gate_substep),
+            split_gate_hold_active = deep_copy_table(self.split_gate_hold_active),
+            split_arc_pitch_pos = deep_copy_table(self.split_arc_pitch_pos),
             fill_patterns = deep_copy_table(self.fill_patterns),
             ratios = deep_copy_table(self.ratios),
             spice = deep_copy_table(self.spice),
@@ -282,6 +293,11 @@ function M.install(App)
             "transpose_seq_assign",
             "track_gate_ticks",
             "track_hold_tie_len_enabled",
+            "split_gate_pos",
+            "split_pitch_pos",
+            "split_gate_substep",
+            "split_gate_hold_active",
+            "split_arc_pitch_pos",
             "fill_patterns",
             "ratios",
             "spice",
@@ -411,6 +427,9 @@ function M.install(App)
                 self.track_state_validated_step_limit[t] = nil
             end
             self:ensure_track_state(t)
+            if self:is_track_split(t) then
+                self:ensure_split_track_state(t)
+            end
         end
 
         for s = 1, cfg.NUM_STEPS do

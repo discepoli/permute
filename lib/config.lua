@@ -28,6 +28,19 @@ M.SCALES = {
   lightbath = { 0, 2, 7, 9 }
 }
 
+M.SPLIT_NUM_GATES = 8
+
+M.SPLIT_GATE_STAGE_PLAYBACK = {
+  "triggered",
+  "ratchet",
+  "held",
+}
+
+M.SPLIT_GATE_STAGE_PITCH_ADVANCE = {
+  "off",
+  "on",
+}
+
 M.TRACK_CFG = {
   { type = "drum", ch = 8, note = 60 },
   { type = "drum", ch = 8, note = 61 },
@@ -79,6 +92,14 @@ M.ARC_VARIANCE_MODES = {
   "cadence 2",
   "cadence 3",
   "cadence 4"
+}
+
+M.ARC_SPLIT_PLAYBACK_PRESETS = {
+  { name = "trig adv", playback = 1, pitch_advance = true },
+  { name = "trig", playback = 1, pitch_advance = false },
+  { name = "ratch adv", playback = 2, pitch_advance = true },
+  { name = "ratch", playback = 2, pitch_advance = false },
+  { name = "held", playback = 3, pitch_advance = false },
 }
 
 M.ARC_CADENCE_SHAPES = {

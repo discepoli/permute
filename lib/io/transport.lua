@@ -261,6 +261,32 @@ function M.install(App)
         }
     end
 
+    function App:schedule_delayed_note_on(track, note, vel, ch, delay_ticks, duration_ticks, ports)
+        self.active_scheduled_note_ons[#self.active_scheduled_note_ons + 1] = {
+            track = track,
+            note = note,
+            vel = vel,
+            ch = ch,
+            ports = ports or self.midi_out_ports_snapshot,
+            on_tick = self.transport_clock + math.max(0, tonumber(delay_ticks) or 0),
+            duration = math.max(0.001, tonumber(duration_ticks) or cfg.MIDI_CLOCK_TICKS_PER_STEP),
+        }
+    end
+
+    function App:clear_scheduled_note_events_for_track(track)
+        self:clear_scheduled_note_offs_for_track(track)
+        local events = self.active_scheduled_note_ons
+        local write_idx = 1
+        for read_idx = 1, #events do
+            local ev = events[read_idx]
+            if ev.track ~= track then
+                events[write_idx] = ev
+                write_idx = write_idx + 1
+            end
+        end
+        for i = write_idx, #events do events[i] = nil end
+    end
+
     function App:clear_scheduled_note_offs_for_track(track)
         local events = self.active_note_offs
         local write_idx = 1
@@ -272,6 +298,26 @@ function M.install(App)
             end
         end
         for i = write_idx, #events do events[i] = nil end
+    end
+
+    function App:process_scheduled_note_ons()
+        local events = self.active_scheduled_note_ons
+        local w = 1
+        for r = 1, #events do
+            local ev = events[r]
+            if self.transport_clock >= ev.on_tick then
+                self:midi_note_on(ev.note, ev.vel, ev.ch, ev.ports)
+                if self.trigger_crow then self:trigger_crow(ev.track, ev.note) end
+                self:schedule_note_off(ev.track, ev.note, ev.ch, ev.duration, ev.ports)
+                if type(self.last_notes) == "table" then
+                    self.last_notes[ev.track] = { note = ev.note, ch = ev.ch, ports = ev.ports }
+                end
+            else
+                events[w] = ev
+                w = w + 1
+            end
+        end
+        for i = w, #events do events[i] = nil end
     end
 
     function App:process_scheduled_note_offs()
@@ -321,6 +367,44 @@ function M.install(App)
             end
 
             for _ = 1, hits do
+                if tc.type == "split" then
+                    local sp = self:ensure_split_track_state(t)
+                    local gate_idx = clamp(tonumber(self.split_gate_pos[t]) or 1, 1, cfg.SPLIT_NUM_GATES)
+                    local gate_stage_playback = self:get_split_gate_stage_playback(tr, gate_idx, t)
+                    local in_held_substep = gate_stage_playback == 3 and self.split_gate_hold_active[t]
+                    local pitch_ctx = {
+                        scale = mode_scale,
+                        mode_root = mode_root,
+                        transpose_mode = transpose_mode,
+                        transpose_seq_degree = transpose_seq_degree,
+                    }
+                    local output_ports = self.midi_out_ports_snapshot
+                    local function send_note_on(note, vel, ch)
+                        self:midi_note_on(note, vel, ch, output_ports)
+                        if self.clock_debug_log_note_on then
+                            self:clock_debug_log_note_on(
+                                t,
+                                self.split_gate_pos[t],
+                                note,
+                                ch,
+                                vel
+                            )
+                        end
+                    end
+
+                    if self.last_notes[t] and not in_held_substep and gate_stage_playback ~= 2 then
+                        self:note_off_last_for_track(t)
+                    end
+
+                    self:play_split_track_hit(t, tr, tc, pitch_ctx, send_note_on, swing_ticks)
+
+                    local ts = tonumber(self.track_steps[t]) or 1
+                    if len > 0 and ts % len == 0 then
+                        self:apply_track_evolving_randomization(t)
+                        self.track_loop_count[t] = (tonumber(self.track_loop_count[t]) or 1) + 1
+                    end
+                    self.track_steps[t] = ts + 1
+                else
                 local st = self:get_track_step(t)
                 if (self.follow_page_on_playhead or self.follow_page_on_playhead_aux_takeover or self.follow_page_on_playhead_aux)
                     and not self.mod_held[cfg.MOD.START]
@@ -453,6 +537,7 @@ function M.install(App)
                         sp.current = self.spice_accum_max
                     end
                 end
+                end
             end
         end
         return total_hits
@@ -487,6 +572,7 @@ function M.install(App)
         if self.clock_debug_enabled and self.clock_debug_count then
             self:clock_debug_count("track_hits", hits)
         end
+        self:process_scheduled_note_ons()
         self:process_scheduled_note_offs()
         if hits > 0 and not step_boundary and self.request_main_grid_redraw then
             self:request_main_grid_redraw()
@@ -560,6 +646,7 @@ function M.install(App)
         end
         self.last_notes = {}
         self.active_note_offs = {}
+        self.active_scheduled_note_ons = {}
         self.midi_in_active_notes = {}
         self.midi_in_record_holds = {}
         self.midi_record_skip_once = {}

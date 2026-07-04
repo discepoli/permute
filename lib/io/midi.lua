@@ -116,7 +116,11 @@ function M.install(App)
             end
         end
         self.last_notes[track] = nil
-        self:clear_scheduled_note_offs_for_track(track)
+        if self.clear_scheduled_note_events_for_track then
+            self:clear_scheduled_note_events_for_track(track)
+        else
+            self:clear_scheduled_note_offs_for_track(track)
+        end
     end
 
     function App:is_lpp_port(source_port)
