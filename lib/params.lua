@@ -5,7 +5,7 @@ local swing_profiles = include("lib/sequencer/swing_profiles")
 local M = {}
 
 local SCALE_NAMES = { "chromatic", "diatonic", "pentatonic", "lightbath" }
-local TRACK_TYPES = { "drum", "mono", "poly" }
+local TRACK_TYPES = { "drum", "mono", "poly", "split" }
 local BEAT_REPEAT_MODES = { "full-row", "one-handed", "step-select" }
 local TRANSPOSE_MODES = { "semitone", "scale degree" }
 local RESET_TIMING_OPTIONS = { "instant", "next beat" }

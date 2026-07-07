@@ -32,6 +32,33 @@ function M.install(App)
         local tc = self.track_cfg[t]
         if not tr or not tc then return end
 
+        if tc.type == "split" then
+            local sp = self:ensure_split_track_state(t)
+            local num = cfg.SPLIT_NUM_GATES
+            local gate_lo, gate_hi = self:get_split_gate_bounds(tr)
+            local pitch_lo, pitch_hi = self:get_split_pitch_bounds(tr)
+            local gate_prob = clamp(tonumber(self.track_rand_gate_prob[t]) or 0, 0, 1)
+            if gate_prob > 0 then
+                for i = gate_lo, gate_hi do
+                    if math.random() < gate_prob then
+                        sp.gates[i] = not sp.gates[i]
+                    end
+                end
+            end
+            local pitch_prob = clamp(tonumber(self.track_rand_pitch_prob[t]) or 0, 0, 1)
+            local pitch_span = clamp(tonumber(self.track_rand_pitch_span[t]) or 0, 0, 15)
+            if pitch_prob > 0 and pitch_span > 0 then
+                for i = pitch_lo, pitch_hi do
+                    if math.random() < pitch_prob then
+                        local delta = math.random(1, pitch_span)
+                        if math.random(1, 2) == 1 then delta = -delta end
+                        sp.pitches[i] = clamp((tonumber(sp.pitches[i]) or 1) + delta, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
+                    end
+                end
+            end
+            return
+        end
+
         local gate_prob = clamp(tonumber(self.track_rand_gate_prob[t]) or 0, 0, 1)
         local step_limit = self:get_track_step_limit()
         if gate_prob > 0 then
@@ -79,6 +106,17 @@ function M.install(App)
     function App:apply_random_notes(track, amount)
         local tr = self.tracks[track]
         local tc = self.track_cfg[track]
+        if tc.type == "split" then
+            local sp = self:ensure_split_track_state(track)
+            local pitch_lo, pitch_hi = self:get_split_pitch_bounds(tr)
+            local center_degree = 1
+            for i = pitch_lo, pitch_hi do
+                local shift = math.random(0, amount)
+                if math.random(1, 2) == 1 then shift = -shift end
+                sp.pitches[i] = clamp(center_degree + shift, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
+            end
+            return
+        end
         local is_drum = (tc.type == "drum")
         local center_degree = 1
         local step_limit = self:get_track_step_limit()
@@ -104,6 +142,19 @@ function M.install(App)
 
     function App:apply_random_steps(track, density)
         local tr = self:ensure_track_state(track)
+        local tc = self.track_cfg[track]
+        if tc.type == "split" then
+            local sp = self:ensure_split_track_state(track)
+            local lo, hi = self:get_split_gate_bounds(tr)
+            local len = hi - lo + 1
+            local fill_count = math.floor(len * density / 16)
+            for i = lo, hi do sp.gates[i] = false end
+            for _ = 1, fill_count do
+                local i = math.random(lo, hi)
+                sp.gates[i] = true
+            end
+            return
+        end
         local lo = math.min(tr.start_step, tr.end_step)
         local hi = math.max(tr.start_step, tr.end_step)
         local len = hi - lo + 1
