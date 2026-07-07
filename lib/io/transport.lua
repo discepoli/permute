@@ -169,6 +169,22 @@ function M.install(App)
         self.external_clock_last_tempo_update = nil
         self.external_clock_last_screen_refresh_ms = 0
         self.external_clock_subtick_progress = 0
+        self.pending_follower_start_hit = false
+    end
+
+    function App:prime_follower_start_phase(ticks)
+        if not self.pending_follower_start_hit then return end
+        self.pending_follower_start_hit = false
+        local pulse_scale = ticks / cfg.MIDI_CLOCK_TICKS_PER_STEP
+        for t = 1, cfg.NUM_TRACKS do
+            local mult = self.track_clock_mult[t]
+            local div = self.track_clock_div[t]
+            local ts = tonumber(self.track_steps[t]) or 1
+            local swing_ticks = self:get_track_swing_step_ticks(t, ts)
+            local swing_factor = cfg.MIDI_CLOCK_TICKS_PER_STEP / math.max(0.001, swing_ticks)
+            local ratio = (mult / div) * pulse_scale * swing_factor
+            self.track_clock_phase[t] = math.max(0, 1 - ratio)
+        end
     end
 
     function App:ensure_transport_scheduler_running()
@@ -568,6 +584,7 @@ function M.install(App)
             end
         end
 
+        self:prime_follower_start_phase(ticks)
         local hits = self:play_tracks(ticks / cfg.MIDI_CLOCK_TICKS_PER_STEP)
         if self.clock_debug_enabled and self.clock_debug_count then
             self:clock_debug_count("track_hits", hits)

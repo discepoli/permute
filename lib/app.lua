@@ -123,6 +123,7 @@ function App.new()
     self.external_clock_subtick_id = nil
     self.external_clock_subtick_generation = 0
     self.external_clock_subtick_progress = 0
+    self.pending_follower_start_hit = false
     self.transpose_mode = "semitone"
     self.transpose_takeover_mode = false
     self.transpose_seq_enabled = false
@@ -193,7 +194,6 @@ function App.new()
     self.midi_out_ports = { 1 }
     self.midi_out_ports_snapshot = { 1 }
     self.midi_active_ports = { [1] = true }
-    self.midi_clock_in_port = nil
     self.midi_in_port_slots = { 0, 0 }
     self.midi_in_ports = {}
     self.midi_in_ports_snapshot = {}

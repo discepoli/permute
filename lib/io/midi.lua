@@ -34,6 +34,13 @@ function M.install(App)
         return self:get_selected_midi_ports(self.midi_in_port_slots)
     end
 
+    function App:is_midi_clock_source_port(port)
+        if not port then return true end
+        if self.midi_in_active_ports and self.midi_in_active_ports[port] then return true end
+        if self.midi_active_ports and self.midi_active_ports[port] then return true end
+        return false
+    end
+
     function App:capture_midi_ports(ports)
         if type(ports) == "table" then return ports end
         return self.midi_out_ports_snapshot or self:get_selected_midi_ports()
@@ -816,12 +823,8 @@ function M.install(App)
         local from_input_port = source_port and self.midi_in_active_ports and self.midi_in_active_ports[source_port] or
         false
 
-        if is_realtime and source_port then
-            if not self.midi_clock_in_port then
-                self.midi_clock_in_port = source_port
-            elseif self.midi_clock_in_port ~= source_port then
-                return
-            end
+        if is_realtime and source_port and not self:is_midi_clock_source_port(source_port) then
+            return
         end
 
         if status == 248 then
@@ -836,6 +839,9 @@ function M.install(App)
             self:reset_playheads()
             self.playing = true
             self:reset_external_clock_sync()
+            if self.use_midi_clock then
+                self.pending_follower_start_hit = true
+            end
             self:on_external_clock_pulse()
             if self.clock_debug_enabled then
                 self:clock_debug_reset_state()
@@ -908,6 +914,9 @@ function M.install(App)
             self:reset_playheads()
             self.playing = true
             self:reset_external_clock_sync()
+            if self.use_midi_clock then
+                self.pending_follower_start_hit = true
+            end
             self:request_redraw()
             self:request_aux_redraw()
         elseif t == "continue" then
@@ -920,6 +929,7 @@ function M.install(App)
                 clock.cancel(self.transport_scheduler_id)
                 self.transport_scheduler_id = nil
             end
+            self:reset_external_clock_sync()
             self:clear_realtime_row_holds()
             self:stop_all_notes()
             self:request_redraw()
@@ -1011,7 +1021,6 @@ function M.install(App)
         self.midi_in_active_ports = {}
         self.midi_in_active_notes = {}
         self.midi_in_record_holds = {}
-        self.midi_clock_in_port = nil
         self.midi_devs_active = {}
 
         local ports_to_bind = {}
