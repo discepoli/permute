@@ -120,6 +120,7 @@ function M.install(App)
                         self.fill_latched = false
                         self.fill_active = false
                         self.fill_applied = false
+                        self:clear_fill_split_gates()
                     else
                         self.temp_latched = false
                         self:clear_temp_steps()
@@ -199,6 +200,7 @@ function M.install(App)
             if x == cfg.MOD.TEMP and self:is_temp_button_fill_mode() then
                 self.fill_active = false
                 self.fill_applied = self.fill_latched
+                if not self.fill_latched then self:clear_fill_split_gates() end
             end
             if x == cfg.MOD.RAND_NOTES then self.rand_notes_rolled = false end
             if x == cfg.MOD.RAND_STEPS then self.rand_steps_shuffled = false end
@@ -283,18 +285,46 @@ function M.install(App)
                 self.track_transpose[self.sel_track] = x - 8
                 applied_value = tostring(self.track_transpose[self.sel_track])
             elseif self.mod_held[cfg.MOD.START] and not self.mod_held[cfg.MOD.END_STEP] and not self.speed_mode and self.sel_track then
+                local t = clamp(tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+                if self:is_track_split(t) then
+                    should_push_undo = true
+                    local sp = self:ensure_split_track_state(t)
+                    local num = cfg.SPLIT_NUM_GATES
+                    if x >= 1 and x <= num then
+                        sp.gate_start = x
+                        applied_value = "g start " .. tostring(x)
+                    elseif x > num and x <= num * 2 then
+                        sp.pitch_start = x - num
+                        applied_value = "p start " .. tostring(sp.pitch_start)
+                    end
+                else
                 local max_pages = self:get_track_max_pages()
                 if x <= max_pages then
                     local page = self:set_track_view_page(self.sel_track, x)
                     self:set_track_aux_page(self.sel_track, page)
                     applied_value = "page " .. tostring(page)
                 end
+                end
             elseif self.mod_held[cfg.MOD.END_STEP] and not self.mod_held[cfg.MOD.START] and not self.speed_mode and self.sel_track then
+                local t = clamp(tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+                if self:is_track_split(t) then
+                    should_push_undo = true
+                    local sp = self:ensure_split_track_state(t)
+                    local num = cfg.SPLIT_NUM_GATES
+                    if x >= 1 and x <= num then
+                        sp.gate_end = x
+                        applied_value = "g end " .. tostring(x)
+                    elseif x > num and x <= num * 2 then
+                        sp.pitch_end = x - num
+                        applied_value = "p end " .. tostring(sp.pitch_end)
+                    end
+                else
                 local max_pages = self:get_track_max_pages()
                 if x <= max_pages then
                     local page = self:set_track_view_page(self.sel_track, x)
                     self:set_track_aux_page(self.sel_track, page)
                     applied_value = "page " .. tostring(page)
+                end
                 end
             elseif self.mod_held[cfg.MOD.RAND_NOTES] and not self.mod_held[cfg.MOD.RAND_STEPS] and self.sel_track then
                 self:apply_random_notes(self.sel_track, x)
@@ -367,6 +397,51 @@ function M.install(App)
             elseif self.mod_held[cfg.MOD.SPICE] then
                 self.spice_pending_amount = x - 8
                 applied_value = tostring(self.spice_pending_amount)
+            elseif self.held and self:is_track_split(self.held.t) then
+                should_push_undo = true
+                local sp = self:ensure_split_track_state(self.held.t)
+                if self.held.split_region == "gate" then
+                    local gate_idx = clamp(tonumber(self.held.split_index) or 1, 1, cfg.SPLIT_NUM_GATES)
+                    if x <= cfg.SPLIT_NUM_GATES then
+                        local new_steps = clamp(x, 1, cfg.SPLIT_NUM_GATES)
+                        if sp.gates[gate_idx] and sp.gate_stage_steps[gate_idx] == new_steps then
+                            sp.gates[gate_idx] = false
+                        else
+                            sp.gate_stage_steps[gate_idx] = new_steps
+                            sp.gates[gate_idx] = true
+                        end
+                        applied_value = "steps " .. tostring(sp.gate_stage_steps[gate_idx])
+                    elseif x >= 11 and x <= 13 then
+                        local playback = x - 10
+                        if sp.gates[gate_idx] and sp.gate_stage_playback[gate_idx] == playback then
+                            sp.gates[gate_idx] = false
+                        else
+                            sp.gate_stage_playback[gate_idx] = playback
+                            sp.gates[gate_idx] = true
+                        end
+                        applied_value = cfg.SPLIT_GATE_STAGE_PLAYBACK[sp.gate_stage_playback[gate_idx]]
+                            or tostring(sp.gate_stage_playback[gate_idx])
+                    elseif x == 15 then
+                        if sp.gates[gate_idx] and sp.gate_stage_pitch_advance[gate_idx] then
+                            sp.gates[gate_idx] = false
+                        else
+                            sp.gate_stage_pitch_advance[gate_idx] = true
+                            sp.gates[gate_idx] = true
+                        end
+                        applied_value = cfg.SPLIT_GATE_STAGE_PITCH_ADVANCE[2]
+                    elseif x == 16 then
+                        if sp.gates[gate_idx] and not sp.gate_stage_pitch_advance[gate_idx] then
+                            sp.gates[gate_idx] = false
+                        else
+                            sp.gate_stage_pitch_advance[gate_idx] = false
+                            sp.gates[gate_idx] = true
+                        end
+                        applied_value = cfg.SPLIT_GATE_STAGE_PITCH_ADVANCE[1]
+                    end
+                elseif self.held.split_region == "pitch" then
+                    sp.pitches[self.held.split_index] = clamp(x, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
+                    applied_value = "deg " .. tostring(sp.pitches[self.held.split_index])
+                end
             elseif self.held then
                 local tr = self.tracks[self.held.t]
                 if self.track_cfg[self.held.t].type == "drum" then
@@ -465,8 +540,114 @@ function M.install(App)
         return self:midi_to_vel_level(self:get_track_default_midi_velocity(track))
     end
 
+    function App:draw_split_track_row(t, y, tr, tc)
+        local sp = self:ensure_split_track_state(t)
+        local num = cfg.SPLIT_NUM_GATES
+        local gate_playhead = clamp(tonumber(self.split_gate_pos[t]) or 1, 1, num)
+        local pitch_playhead = clamp(tonumber(self.split_pitch_pos[t]) or 1, 1, num)
+        local scale = cfg.SCALES[self.scale_type] or cfg.SCALES.chromatic
+        local scale_len = math.max(1, #scale)
+        local lo, hi = self:get_split_gate_bounds(tr)
+        local pitch_lo, pitch_hi = self:get_split_pitch_bounds(tr)
+        local fill_gates = (self.fill_active and self.fill_split_gates and self.fill_split_gates[t]) or {}
+
+        for gate_idx = 1, num do
+            local col = gate_idx
+            local in_range = gate_idx >= lo and gate_idx <= hi
+            local lv = 0
+            local gate_live = sp.gates[gate_idx] or fill_gates[gate_idx]
+                or self:split_arc_gate_active(t, tr, sp, gate_idx)
+            if gate_live then
+                local manual_on = not not sp.gates[gate_idx]
+                local capacity = clamp(tonumber(sp.gate_stage_steps[gate_idx]) or 1, 1, num)
+                local stage_steps = manual_on and capacity or self:get_split_effective_stage_steps(tr, sp, gate_idx)
+                lv = 6 + math.min(stage_steps, 4)
+                if fill_gates[gate_idx] and not manual_on then lv = 8 end
+            end
+            if gate_playhead == gate_idx and self.playing and gate_live then
+                lv = math.max(lv + 4, 12)
+            end
+            if tr.muted and lv > 0 then lv = math.floor(lv / 3) end
+            if not in_range and lv > 0 then lv = math.floor(lv / 2) end
+            lv = self:split_gate_bound_marker_level(gate_idx, sp, lv)
+            if lv > 0 then self:grid_led_main(col, y, lv) end
+        end
+
+        for pitch_idx = 1, num do
+            local col = num + pitch_idx
+            local in_range = pitch_idx >= pitch_lo and pitch_idx <= pitch_hi
+            local degree = clamp(tonumber(sp.pitches[pitch_idx]) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
+            local lv = 3 + ((degree - 1) % scale_len)
+            if ((degree - 1) % scale_len) == 0 then lv = math.max(lv, 5) end
+            if pitch_playhead == pitch_idx and self.playing then lv = math.max(lv + 3, 10) end
+            if self.sel_track == t then lv = math.max(lv, 4) end
+            if tr.muted then lv = math.floor(lv / 3) end
+            if not in_range then lv = math.floor(lv / 2) end
+            lv = self:split_pitch_bound_marker_level(pitch_idx, sp, lv)
+            self:grid_led_main(col, y, lv)
+        end
+    end
+
+    function App:draw_split_pitch_dynamic_row(dyn_row, pitch_idx, degree)
+        local scale = cfg.SCALES[self.scale_type] or cfg.SCALES.chromatic
+        for x = 1, 16 do
+            local is_root = ((x - 1) % #scale) == 0
+            if x == degree then
+                self:grid_led_main(x, dyn_row, 15)
+            elseif is_root then
+                self:grid_led_main(x, dyn_row, 5)
+            else
+                self:grid_led_main(x, dyn_row, 2)
+            end
+        end
+    end
+
+    function App:draw_split_dynamic_row()
+        local dyn_row = self:get_main_dynamic_row()
+        local t = clamp(tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+        if not self:is_track_split(t) then return false end
+
+        local sp = self:ensure_split_track_state(t)
+        local num = cfg.SPLIT_NUM_GATES
+
+        if self.held and self.held.t == t and self.held.split_region == "gate" then
+            local gate_idx = clamp(tonumber(self.held.split_index) or 1, 1, num)
+            local stage_steps = clamp(tonumber(sp.gate_stage_steps[gate_idx]) or 1, 1, num)
+            local playback = clamp(tonumber(sp.gate_stage_playback[gate_idx]) or 1, 1, #cfg.SPLIT_GATE_STAGE_PLAYBACK)
+            local pitch_advance = not not sp.gate_stage_pitch_advance[gate_idx]
+            for x = 1, num do
+                self:grid_led_main(x, dyn_row, x <= stage_steps and 12 or 2)
+            end
+            for x = num + 1, 10 do self:grid_led_main(x, dyn_row, 0) end
+            for mode = 1, #cfg.SPLIT_GATE_STAGE_PLAYBACK do
+                local col = 10 + mode
+                local lv = (playback == mode) and 15 or 4
+                self:grid_led_main(col, dyn_row, lv)
+            end
+            self:grid_led_main(14, dyn_row, 0)
+            self:grid_led_main(15, dyn_row, pitch_advance and 15 or 4)
+            self:grid_led_main(16, dyn_row, pitch_advance and 4 or 15)
+            return true
+        end
+
+        if self.held and self.held.t == t and self.held.split_region == "pitch" then
+            local degree = clamp(
+                tonumber(sp.pitches[self.held.split_index]) or 1,
+                cfg.MIN_SCALE_DEGREE,
+                cfg.MAX_SCALE_DEGREE
+            )
+            self:draw_split_pitch_dynamic_row(dyn_row, self.held.split_index, degree)
+            return true
+        end
+
+        return false
+    end
+
     function App:draw_dynamic_row()
         local dyn_row = self:get_main_dynamic_row()
+        if self.held and self:is_track_split(self.held.t) and not self:split_modifiers_active() and not self.takeover_mode then
+            if self:draw_split_dynamic_row() then return end
+        end
         if self.held and not self:any_mod_active() and not self.takeover_mode then
             local tr = self.tracks[self.held.t]
             if self.track_cfg[self.held.t].type == "drum" then
@@ -528,6 +709,17 @@ function M.install(App)
 
         if self.mod_held[cfg.MOD.START] and not self.mod_held[cfg.MOD.END_STEP] and not self.speed_mode and self.sel_track then
             local t = clamp(tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+            if self:is_track_split(t) then
+                local sp = self:ensure_split_track_state(t)
+                local num = cfg.SPLIT_NUM_GATES
+                for x = 1, 16 do
+                    local lv = 0
+                    if x <= num then lv = 2 end
+                    if x == sp.gate_start or x == (num + sp.pitch_start) then lv = 15 end
+                    if lv > 0 then self:grid_led_main(x, dyn_row, lv) end
+                end
+                return
+            end
             local tr = self:ensure_track_state(t)
             local start_page = self:track_step_to_page(tr.start_step)
             local current_page = self:get_track_view_page(t)
@@ -546,6 +738,17 @@ function M.install(App)
 
         if self.mod_held[cfg.MOD.END_STEP] and not self.mod_held[cfg.MOD.START] and not self.speed_mode and self.sel_track then
             local t = clamp(tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+            if self:is_track_split(t) then
+                local sp = self:ensure_split_track_state(t)
+                local num = cfg.SPLIT_NUM_GATES
+                for x = 1, 16 do
+                    local lv = 0
+                    if x <= num then lv = 2 end
+                    if x == sp.gate_end or x == (num + sp.pitch_end) then lv = 15 end
+                    if lv > 0 then self:grid_led_main(x, dyn_row, lv) end
+                end
+                return
+            end
             local tr = self:ensure_track_state(t)
             local end_page = self:track_step_to_page(tr.end_step)
             local current_page = self:get_track_view_page(t)
@@ -711,6 +914,10 @@ function M.install(App)
     function App:draw_takeover()
         local tr = self:ensure_track_state(self.sel_track)
         local tc = self.track_cfg[self.sel_track]
+        if tc and tc.type == "split" then
+            self:draw_split_takeover()
+            return
+        end
         local step_cache = self:build_arc_step_cache(self.sel_track, tr, tc)
         local fills = self.fill_patterns[self.sel_track] or {}
         local current_step = self:get_track_step(self.sel_track)
@@ -867,6 +1074,9 @@ function M.install(App)
                     view_page = self:get_track_view_page(self.sel_track or t)
                 end
 
+                if tc.type == "split" then
+                    self:draw_split_track_row(t, y, tr, tc)
+                else
                 for col = 1, cfg.NUM_STEPS do
                     local s = self:get_track_visible_step(t, col, view_page)
                     local lv = 0
@@ -901,6 +1111,7 @@ function M.install(App)
                     end
 
                     if lv > 0 then dev:led(col, y, lv) end
+                end
                 end
             end
             self:draw_dynamic_row()

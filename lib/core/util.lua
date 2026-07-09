@@ -39,7 +39,9 @@ end
 M.SCALE_DEGREE_INDICES = {
     diatonic = { 1, 2, 3, 4, 5, 6, 7 },
     pentatonic = { 1, 2, 3, 4, 5 },
-    lightbath = { 1, 2, 3, 4 }
+    lightbath = { 1, 2, 3, 4 },
+    octaves_and_fifths = { 1, 2 },
+    octaves_only = { 1 }
 }
 
 M.ARC_VARIANCE_MODES = cfg.ARC_VARIANCE_MODES

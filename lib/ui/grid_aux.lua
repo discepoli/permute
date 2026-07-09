@@ -215,6 +215,69 @@ function M.install(App)
         local scale = cfg.SCALES[self.scale_type] or cfg.SCALES.chromatic
         local view_page = self:get_track_aux_page(t)
 
+        if tc.type == "split" then
+            local sp = self:ensure_split_track_state(t)
+            local num = cfg.SPLIT_NUM_GATES or 8
+            local gate_playhead = clamp(tonumber(self.split_gate_pos[t]) or 1, 1, num)
+            local pitch_playhead = clamp(tonumber(self.split_pitch_pos[t]) or 1, 1, num)
+            local gate_lo, gate_hi = self:get_split_gate_bounds(tr)
+            local pitch_lo, pitch_hi = self:get_split_pitch_bounds(tr)
+            local _, arc_active = self:get_arc_pattern(t)
+            local rows = cfg.AUX_GRID_ROWS
+
+            for gate_idx = 1, num do
+                local col = gate_idx
+                local in_range = gate_idx >= gate_lo and gate_idx <= gate_hi
+                local manual_on = not not sp.gates[gate_idx]
+                local arc_on = not manual_on and arc_active[gate_idx]
+                local gate_live = manual_on or arc_on
+                local is_playhead = (gate_playhead == gate_idx and self.playing)
+                local capacity = clamp(tonumber(sp.gate_stage_steps[gate_idx]) or 1, 1, num)
+                if gate_live then
+                    local stage_steps = manual_on and capacity or self:get_split_effective_stage_steps(tr, sp, gate_idx)
+                    local step_lo = rows - math.min(stage_steps, rows) + 1
+                    for row = step_lo, rows do
+                        local lv = is_playhead and 15 or 10
+                        if arc_on then lv = is_playhead and 11 or 7 end
+                        if not in_range then lv = math.max(1, math.floor(lv / 2)) end
+                        self:aux_buf_led(next_buf, col, row, lv)
+                    end
+                end
+                local marker_lv = self:split_gate_bound_marker_level(gate_idx, sp, 0)
+                if marker_lv > 0 then
+                    self:aux_buf_led(next_buf, col, rows, marker_lv)
+                end
+            end
+
+            for pitch_idx = 1, num do
+                local col = num + pitch_idx
+                local in_range = pitch_idx >= pitch_lo and pitch_idx <= pitch_hi
+                local degree = clamp(tonumber(sp.pitches[pitch_idx]) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
+                local is_playhead = (pitch_playhead == pitch_idx and self.playing)
+
+                for aux_degree = 1, rows do
+                    local row = self:degree_to_aux_row(aux_degree)
+                    local closest = self:get_closest_aux_degree_cached(t, degree)
+                    local is_root = ((aux_degree - 1) % #scale) == 0
+                    local lv = 0
+
+                    if closest == aux_degree then
+                        lv = is_playhead and 15 or 12
+                        if not in_range then lv = math.max(1, math.floor(lv / 2)) end
+                    elseif is_root and in_range then
+                        lv = 2
+                    elseif is_playhead and in_range then
+                        lv = 1
+                    end
+                    lv = self:split_pitch_bound_marker_level(pitch_idx, sp, lv)
+                    if lv > 0 then self:aux_buf_led(next_buf, col, row, lv) end
+                end
+            end
+
+            self:flush_aux_led_buffer(dev, next_buf)
+            return
+        end
+
         if tc.type == "drum" then
             for col = 1, cfg.NUM_STEPS do
                 local s = self:get_track_visible_step(t, col, view_page)
