@@ -130,8 +130,16 @@ function M.install(App)
         elseif mod_id == cfg.MOD.RATIOS then
             return self:get_ratio_label()
         elseif mod_id == cfg.MOD.START and self.sel_track then
+            if self:is_track_split(self.sel_track) then
+                local sp = self:ensure_split_track_state(self.sel_track)
+                return "g" .. tostring(sp.gate_start) .. "/p" .. tostring(sp.pitch_start)
+            end
             return tostring(self.tracks[self.sel_track].start_step)
         elseif mod_id == cfg.MOD.END_STEP and self.sel_track then
+            if self:is_track_split(self.sel_track) then
+                local sp = self:ensure_split_track_state(self.sel_track)
+                return "g" .. tostring(sp.gate_end) .. "/p" .. tostring(sp.pitch_end)
+            end
             return tostring(self.tracks[self.sel_track].end_step)
         elseif mod_id == cfg.MOD.TAKEOVER then
             if self.realtime_play_mode then return "play" end
@@ -421,6 +429,17 @@ function M.install(App)
             end
         end
         self.temp_steps = {}
+        if type(self.temp_split_gates) == "table" then
+            for t, gates in pairs(self.temp_split_gates) do
+                local sp = self.tracks[t] and self.tracks[t].split
+                if sp and sp.gates then
+                    for idx, _ in pairs(gates) do
+                        sp.gates[idx] = false
+                    end
+                end
+            end
+        end
+        self:clear_temp_split_gates()
         self:invalidate_step_cache()
     end
 
@@ -448,6 +467,11 @@ function M.install(App)
             self.tracks[t].gates[s] = false
             if self.track_cfg[t].type == "poly" then self.tracks[t].pitches[s] = { 1 } else self.tracks[t].pitches[s] = 1 end
             self.tracks[t].vels[s] = self:get_track_default_vel_level(t)
+        end
+        if self:is_track_split(t) then
+            self.tracks[t].split = include("lib/sequencer/split").default_split_state()
+            self:reset_split_cursors(t)
+            self:clear_split_edit(t)
         end
         self.fill_patterns[t] = {}
         self.ratios[t] = {}
@@ -520,6 +544,16 @@ function M.install(App)
 
         local tr = self:ensure_track_state(t)
         local tc = self.track_cfg[t]
+
+        if tc.type == "split" then
+            if self:handle_split_aux_event(x, y, z) then
+                self:request_arc_redraw()
+                self:request_redraw()
+                self:request_aux_redraw()
+            end
+            return
+        end
+
         x = self:get_track_visible_step(t, x, self:get_track_aux_page(t))
         local prev_held = self.held
 
@@ -707,6 +741,159 @@ function M.install(App)
         return "overview"
     end
 
+    function App:handle_split_overview_event(t, col, y, z)
+        local tr = self:ensure_track_state(t)
+        local tc = self.track_cfg[t]
+        if not tr or not tc or tc.type ~= "split" then return false end
+
+        local region, index = self:split_col_to_region(col)
+        if not region then return false end
+
+        local sp = self:ensure_split_track_state(t)
+        local prev_held = self.held
+        local prev_held_time = self.held_time
+        local prev_sel_track = self.sel_track
+
+        if z == 1 then
+            self.sel_track = t
+            local did_push = false
+            local function ensure_push()
+                if not did_push then
+                    self:push_undo_state("grid_step_edit")
+                    did_push = true
+                end
+            end
+            local applied_value = nil
+
+            if self.mod_held[cfg.MOD.MUTE] then
+                tr.muted = not tr.muted
+                applied_value = tr.muted and "on" or "off"
+            elseif self.mod_held[cfg.MOD.SOLO] then
+                tr.solo = not tr.solo
+                self:update_solo()
+                applied_value = tr.solo and "on" or "off"
+            elseif self.mod_held[cfg.MOD.START] then
+                ensure_push()
+                if region == "gate" then
+                    sp.gate_start = index
+                    applied_value = "g start " .. tostring(index)
+                elseif region == "pitch" then
+                    sp.pitch_start = index
+                    applied_value = "p start " .. tostring(index)
+                end
+            elseif self.mod_held[cfg.MOD.END_STEP] then
+                ensure_push()
+                if region == "gate" then
+                    sp.gate_end = index
+                    applied_value = "g end " .. tostring(index)
+                elseif region == "pitch" then
+                    sp.pitch_end = index
+                    applied_value = "p end " .. tostring(index)
+                end
+            elseif self.mod_held[cfg.MOD.RATIOS] and region == "gate" then
+                ensure_push()
+                if not sp.gates[index] then sp.gates[index] = true end
+                applied_value = self:apply_pending_ratio_to_step(t, index)
+            elseif self:mod_active(cfg.MOD.TEMP) and not self:is_temp_button_fill_mode() and region == "gate" then
+                ensure_push()
+                self.held_time = now_ms()
+                self.held = {
+                    t = t,
+                    y = y,
+                    split_region = region,
+                    split_index = index,
+                    was_on = sp.gates[index],
+                }
+                if not sp.gates[index] then
+                    sp.gates[index] = true
+                    self:add_temp_split_gate(t, index)
+                end
+                applied_value = "gate " .. tostring(index)
+            elseif self:mod_active(cfg.MOD.TEMP) and self:is_temp_button_fill_mode() and region == "gate" then
+                ensure_push()
+                if type(self.fill_split_gates) ~= "table" then self.fill_split_gates = {} end
+                if type(self.fill_split_gates[t]) ~= "table" then self.fill_split_gates[t] = {} end
+                if self.fill_split_gates[t][index] then
+                    self.fill_split_gates[t][index] = nil
+                    applied_value = "off"
+                else
+                    self.fill_split_gates[t][index] = true
+                    applied_value = "fill " .. tostring(index)
+                end
+            elseif self.mod_held[cfg.MOD.SPICE] and self.spice_pending_amount and region == "pitch" then
+                ensure_push()
+                self.spice[t][index] = { amount = self.spice_pending_amount, current = 0 }
+                applied_value = tostring(self.spice_pending_amount)
+            elseif self.mod_held[cfg.MOD.SPICE] and not self.spice_pending_amount and region == "pitch" then
+                ensure_push()
+                self.spice[t][index] = nil
+                applied_value = "clear"
+            elseif self.mod_held[cfg.MOD.BEAT_RPT] then
+                self.beat_repeat_excluded[t] = not self.beat_repeat_excluded[t]
+                applied_value = self.beat_repeat_excluded[t] and "exclude" or "include"
+            elseif self.mod_held[cfg.MOD.CLEAR] and self.mod_held[cfg.MOD.SHIFT] then
+                ensure_push()
+                self:clear_all_tracks()
+                applied_value = "all"
+            elseif self.mod_held[cfg.MOD.CLEAR] then
+                ensure_push()
+                self:clear_track(t)
+                applied_value = "track"
+            elseif not self:split_modifiers_active() then
+                if self.track_select_focus_mode and prev_sel_track ~= t then
+                    -- select track only; gate/pitch edit on next tap
+                else
+                    ensure_push()
+                    self.held_time = now_ms()
+                    self.held = {
+                        t = t,
+                        y = y,
+                        split_region = region,
+                        split_index = index,
+                        was_on = region == "gate" and sp.gates[index] or false,
+                    }
+
+                    if region == "gate" and not sp.gates[index] then
+                        sp.gates[index] = true
+                    end
+                end
+            end
+
+            if prev_held and prev_held.split_region and prev_held.t == t and prev_held.split_index ~= index
+                and not self:split_modifiers_active()
+                and ((now_ms() - (prev_held_time or 0)) >= self.HOLD_THRESHOLD) then
+                if prev_held.split_region == "gate" and region == "gate" then
+                    ensure_push()
+                    local lo = math.min(prev_held.split_index, index)
+                    local hi = math.max(prev_held.split_index, index)
+                    local val = sp.gates[prev_held.split_index]
+                    for i = lo, hi do sp.gates[i] = val end
+                end
+            end
+
+            local mod_id = self:get_active_mod_id()
+            if mod_id and applied_value then
+                self:flash_mod_applied(mod_id, applied_value)
+            elseif mod_id and self:split_modifiers_active() then
+                self:flash_mod_applied(mod_id)
+            end
+        else
+            if self.held and self.held.t == t and self.held.split_region == region and self.held.split_index == index then
+                local hold_duration = now_ms() - self.held_time
+                if region == "gate" and hold_duration < self.HOLD_THRESHOLD and self.held.was_on then
+                    sp.gates[index] = false
+                end
+            end
+            self.held = nil
+            self:clear_split_edit(t)
+        end
+
+        self:request_arc_redraw()
+        self:request_redraw()
+        self:request_aux_redraw()
+        return true
+    end
+
     function App:handle_main_grid_event(x, y, z)
         local mod_row = self:get_main_mod_row()
         local dyn_row = self:get_main_dynamic_row()
@@ -728,6 +915,15 @@ function M.install(App)
         end
 
         if route == "takeover" then
+            local tc = self.track_cfg[self.sel_track or 1]
+            if tc and tc.type == "split" then
+                if z == 1 and self:handle_split_takeover_event(x, y, z) then
+                    self:request_arc_redraw()
+                    self:request_redraw()
+                    self:request_aux_redraw()
+                end
+                return
+            end
 
             if y >= 1 and y <= takeover_rows then
                 local t = self.sel_track or 1
@@ -925,6 +1121,14 @@ function M.install(App)
 
         local t = self:row_to_track(y)
         if t and t >= 1 and t <= cfg.NUM_TRACKS then
+            local tc = self.track_cfg[t]
+            if tc and tc.type == "split" then
+                if self:handle_split_overview_event(t, x, y, z) then
+                    if not self.mod_held[cfg.MOD.SPICE] then self.spice_pending_amount = nil end
+                    return
+                end
+            end
+
             local page_override = self:get_track_main_grid_page(t)
             if (self.mod_held[cfg.MOD.START] or self.mod_held[cfg.MOD.END_STEP]) and not self.speed_mode then
                 page_override = self:get_track_view_page(self.sel_track or t)

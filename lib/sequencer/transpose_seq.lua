@@ -23,8 +23,11 @@ function M.install(App)
             return {
                 seq_top = 1,
                 seq_bottom = 1,
-                clock_row = 3,
-                assign_row = 5,
+                clock_row = 2,
+                assign_row = 3,
+                key_row = 4,
+                scale_rotation_row = 5,
+                scale_row = 6,
                 dyn_row = dyn_row,
                 mod_row = mod_row
             }
@@ -32,11 +35,106 @@ function M.install(App)
         return {
             seq_top = 1,
             seq_bottom = 8,
-            clock_row = 11,
-            assign_row = 13,
-            dyn_row = dyn_row,
+            clock_row = 10,
+            assign_row = 11,
+            key_row = 13,
+            scale_rotation_row = 14,
+            scale_row = 15,
             mod_row = mod_row
         }
+    end
+
+    function App:get_scale_rotation_count()
+        if self.scale_type == "chromatic" then return 0 end
+        local map = SCALE_DEGREE_INDICES[self.scale_type]
+        return (map and #map) or 0
+    end
+
+    function App:set_scale_rotation_from_grid(degree_idx)
+        if self.scale_type == "chromatic" then return end
+        local map = SCALE_DEGREE_INDICES[self.scale_type]
+        if not map or #map == 0 then return end
+        local d = clamp(tonumber(degree_idx) or 1, 1, #map)
+        if params and params.set then
+            params:set("permute_scale_degree", d)
+        else
+            self.scale_degree = d
+            self:invalidate_aux_degree_cache()
+            self:request_redraw()
+            self:request_aux_redraw()
+        end
+        self:flash_status("scale rot", tostring(d), 0.35)
+    end
+
+    function App:set_key_root_from_grid(root, label)
+        local r = clamp(tonumber(root) or 0, 0, 11)
+        if params and params.set then
+            params:set("permute_key", r)
+        else
+            self.key_root = r
+            self:request_redraw()
+            self:request_aux_redraw()
+        end
+        if label then self:flash_status("key", label, 0.35) end
+    end
+
+    function App:set_scale_type_from_grid(scale_type)
+        for i, name in ipairs(cfg.SCALE_NAMES) do
+            if name == scale_type then
+                if params and params.set then
+                    params:set("permute_scale", i)
+                else
+                    self.scale_type = scale_type
+                    local map = SCALE_DEGREE_INDICES[scale_type]
+                    if map and #map > 0 then
+                        self.scale_degree = clamp(tonumber(self.scale_degree) or 1, 1, #map)
+                    else
+                        self.scale_degree = 1
+                    end
+                    self:invalidate_aux_degree_cache()
+                    self:request_redraw()
+                    self:request_aux_redraw()
+                end
+                self:flash_status("scale", scale_type, 0.35)
+                return
+            end
+        end
+    end
+
+    function App:draw_transpose_key_row(layout)
+        local selected = clamp(tonumber(self.key_root) or 0, 0, 11)
+        for x = 1, 16 do
+            local lv = 0
+            local entry = cfg.TRANSPOSE_KEY_ORDER[x]
+            if entry then
+                lv = (entry.root == selected) and 15 or 2
+            end
+            self:grid_led(x, layout.key_row, lv)
+        end
+    end
+
+    function App:draw_transpose_scale_rotation_row(layout)
+        local max_rot = self:get_scale_rotation_count()
+        local selected = clamp(tonumber(self.scale_degree) or 1, 1, math.max(1, max_rot))
+        for x = 1, 16 do
+            local lv = 0
+            if max_rot > 0 and x <= max_rot then
+                lv = (x == selected) and 15 or 2
+            end
+            self:grid_led(x, layout.scale_rotation_row, lv)
+        end
+    end
+
+    function App:draw_transpose_scale_type_row(layout)
+        local selected = self.scale_type
+        for x = 1, 16 do
+            local lv = 0
+            local name = cfg.SCALE_NAMES[x]
+            if name then
+                lv = (name == selected) and 15 or 2
+            end
+            self:grid_led(x, layout.scale_row, lv)
+        end
     end
 
     function App:get_transpose_seq_current_degree()
@@ -188,7 +286,12 @@ function M.install(App)
         end
         self:grid_led(16, layout.assign_row, self.pending_meta_reset_on_beat and 12 or 7)
 
-        self:draw_transpose_seq_dynamic_row(layout)
+        self:draw_transpose_key_row(layout)
+        self:draw_transpose_scale_rotation_row(layout)
+        self:draw_transpose_scale_type_row(layout)
+        if layout.dyn_row then
+            self:draw_transpose_seq_dynamic_row(layout)
+        end
         self:draw_mod_row()
     end
 
@@ -207,7 +310,7 @@ function M.install(App)
         end
         if z ~= 1 then return end
 
-        if y == layout.dyn_row then
+        if layout.dyn_row and y == layout.dyn_row then
             local step_idx = clamp(tonumber(self.transpose_seq_selected_step) or 1, 1, cfg.NUM_STEPS)
             local step = self.transpose_seq_steps[step_idx] or { active = false, degree = 1 }
             local max_degree = (layout.seq_bottom > layout.seq_top) and 8 or 16
@@ -264,6 +367,33 @@ function M.install(App)
             self.transpose_seq_clock_div = div
             self.transpose_seq_clock_phase = 0
             self:flash_status("meta clock", self:get_speed_ratio_label(mult, div), 0.35)
+            self:request_redraw()
+            return
+        end
+
+        if y == layout.key_row then
+            local entry = cfg.TRANSPOSE_KEY_ORDER[x]
+            if entry then
+                self:set_key_root_from_grid(entry.root, entry.label)
+            end
+            self:request_redraw()
+            return
+        end
+
+        if y == layout.scale_rotation_row then
+            local max_rot = self:get_scale_rotation_count()
+            if x >= 1 and x <= max_rot then
+                self:set_scale_rotation_from_grid(x)
+            end
+            self:request_redraw()
+            return
+        end
+
+        if y == layout.scale_row then
+            local scale_type = cfg.SCALE_NAMES[x]
+            if scale_type then
+                self:set_scale_type_from_grid(scale_type)
+            end
             self:request_redraw()
             return
         end

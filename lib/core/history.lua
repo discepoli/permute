@@ -31,7 +31,8 @@ function M.install(App)
                 gates = deep_copy_table(tr.gates or {}),
                 ties = deep_copy_table(tr.ties or {}),
                 vels = deep_copy_table(tr.vels or {}),
-                pitches = deep_copy_table(tr.pitches or {})
+                pitches = deep_copy_table(tr.pitches or {}),
+                split = deep_copy_table(tr.split or {})
             }
         end
 
@@ -62,6 +63,7 @@ function M.install(App)
                 tr.ties = deep_copy_table(src.ties or {})
                 tr.vels = deep_copy_table(src.vels or {})
                 tr.pitches = deep_copy_table(src.pitches or {})
+                tr.split = deep_copy_table(src.split or {})
                 if type(self.track_state_validated_step_limit) == "table" then
                     self.track_state_validated_step_limit[t] = nil
                 end

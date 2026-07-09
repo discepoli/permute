@@ -25,7 +25,46 @@ M.SCALES = {
   chromatic = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 },
   diatonic = { 0, 2, 4, 5, 7, 9, 11 },
   pentatonic = { 0, 2, 4, 7, 9 },
-  lightbath = { 0, 2, 7, 9 }
+  lightbath = { 0, 2, 7, 9 },
+  octaves_and_fifths = { 0, 7 },
+  octaves_only = { 0 }
+}
+
+M.SCALE_NAMES = {
+  "chromatic",
+  "diatonic",
+  "pentatonic",
+  "lightbath",
+  "octaves_and_fifths",
+  "octaves_only"
+}
+
+M.TRANSPOSE_KEY_ORDER = {
+  { root = 6, label = "Gb" },
+  { root = 1, label = "C#" },
+  { root = 8, label = "Ab" },
+  { root = 3, label = "Eb" },
+  { root = 10, label = "Bb" },
+  { root = 5, label = "F" },
+  { root = 0, label = "C" },
+  { root = 7, label = "G" },
+  { root = 2, label = "D" },
+  { root = 9, label = "A" },
+  { root = 4, label = "E" },
+  { root = 11, label = "B" }
+}
+
+M.SPLIT_NUM_GATES = 8
+
+M.SPLIT_GATE_STAGE_PLAYBACK = {
+  "triggered",
+  "ratchet",
+  "held",
+}
+
+M.SPLIT_GATE_STAGE_PITCH_ADVANCE = {
+  "off",
+  "on",
 }
 
 M.TRACK_CFG = {
@@ -79,6 +118,14 @@ M.ARC_VARIANCE_MODES = {
   "cadence 2",
   "cadence 3",
   "cadence 4"
+}
+
+M.ARC_SPLIT_PLAYBACK_PRESETS = {
+  { name = "trig adv", playback = 1, pitch_advance = true },
+  { name = "trig", playback = 1, pitch_advance = false },
+  { name = "ratch adv", playback = 2, pitch_advance = true },
+  { name = "ratch", playback = 2, pitch_advance = false },
+  { name = "held", playback = 3, pitch_advance = false },
 }
 
 M.ARC_CADENCE_SHAPES = {
