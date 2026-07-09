@@ -336,7 +336,6 @@ function M.process_step(app, track, tr, tc, pitch_ctx)
         app.split_gate_substep[t] = 0
         app.split_gate_hold_active[t] = false
         result.advance_gate = true
-        result.advance_pitch_stage = true
         return result
     end
 
@@ -351,7 +350,9 @@ function M.process_step(app, track, tr, tc, pitch_ctx)
             app.split_gate_substep[t] = 0
             app.split_gate_hold_active[t] = false
             result.advance_gate = true
-            result.advance_pitch_stage = true
+            if pitch_advance_steps then
+                result.advance_pitch_stage = true
+            end
         else
             app.split_gate_substep[t] = substep
         end
@@ -363,7 +364,6 @@ function M.process_step(app, track, tr, tc, pitch_ctx)
         app.split_gate_hold_active[t] = false
         result.ratchet_hits = stage_steps
         result.advance_gate = true
-        result.advance_pitch_stage = true
         if pitch_advance_steps then
             result.ratchet_pitch_advance = true
         end
@@ -381,7 +381,6 @@ function M.process_step(app, track, tr, tc, pitch_ctx)
     if substep >= stage_steps then
         app.split_gate_substep[t] = 0
         result.advance_gate = true
-        result.advance_pitch_stage = true
     else
         app.split_gate_substep[t] = substep
     end
