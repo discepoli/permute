@@ -233,7 +233,11 @@ function M.install(App)
             fill_patterns = deep_copy_table(self.fill_patterns),
             ratios = deep_copy_table(self.ratios),
             spice = deep_copy_table(self.spice),
-            save_slots = deep_copy_table(self.save_slots),
+            track_pattern_slots = deep_copy_table(self.track_pattern_slots),
+            track_pattern_slot_active = deep_copy_table(self.track_pattern_slot_active),
+            track_pattern_slot_highest = deep_copy_table(self.track_pattern_slot_highest),
+            pattern_slot_dynamic_mode = self.pattern_slot_dynamic_mode,
+            pattern_slot_switch_timing = self.pattern_slot_switch_timing,
             beat_repeat_len = self.beat_repeat_len,
             beat_repeat_mode = self.beat_repeat_mode,
             beat_repeat_direction = self.beat_repeat_direction,
@@ -301,7 +305,9 @@ function M.install(App)
             "fill_patterns",
             "ratios",
             "spice",
-            "save_slots",
+            "track_pattern_slots",
+            "track_pattern_slot_active",
+            "track_pattern_slot_highest",
             "beat_repeat_excluded",
             "lpp_zone_octave",
             "lpp_zone_track",
@@ -356,6 +362,18 @@ function M.install(App)
         self.transpose_seq_clock_mult = clamp(tonumber(state.transpose_seq_clock_mult) or self.transpose_seq_clock_mult or 1, 1, 8)
         self.transpose_seq_clock_div = clamp(tonumber(state.transpose_seq_clock_div) or self.transpose_seq_clock_div or 4, 1, 64)
         self.transpose_seq_step = clamp(tonumber(state.transpose_seq_step) or self.transpose_seq_step or 1, 1, cfg.NUM_STEPS)
+        if state.pattern_slot_dynamic_mode then
+            self.pattern_slot_dynamic_mode = state.pattern_slot_dynamic_mode
+        end
+        if state.pattern_slot_switch_timing then
+            self.pattern_slot_switch_timing = state.pattern_slot_switch_timing
+        end
+        if type(self.track_pattern_slot_dirty) ~= "table" then self.track_pattern_slot_dirty = {} end
+        if type(self.pending_pattern_switches) ~= "table" then self.pending_pattern_switches = {} end
+        for t = 1, cfg.NUM_TRACKS do
+            self:init_track_pattern_slots(t)
+            self.track_pattern_slot_dirty[t] = false
+        end
         self.transpose_seq_clock_phase = 0
         self.scale_degree = clamp(tonumber(state.scale_degree) or self.scale_degree or 1, 1, 7)
         self.lpp_enabled = not not state.lpp_enabled
@@ -472,106 +490,6 @@ function M.install(App)
 
     function App:delete_preset(number)
         os.remove(self:preset_path(number))
-    end
-
-    function App:save_to_slot(slot)
-        if slot < 1 or slot > 8 then return end
-        local track_step_limit = self:get_track_step_limit()
-        local snap = { g = {}, p = {}, v = {}, r = {}, sp = {}, m = {}, key_transpose = self.key_transpose, tt = {} }
-        for t = 1, cfg.NUM_TRACKS do
-            local tr = self:ensure_track_state(t)
-            local tc = self.track_cfg[t]
-            snap.g[t] = {}
-            snap.p[t] = {}
-            snap.v[t] = {}
-            snap.r[t] = {}
-            snap.sp[t] = {}
-            snap.tt[t] = clamp(tonumber(self.track_transpose[t]) or 0, -96, 96)
-            snap.m[t] = {
-                start_step = self:clamp_track_step(tr.start_step, 1),
-                end_step = self:clamp_track_step(tr.end_step, math.min(cfg.NUM_STEPS, track_step_limit)),
-                octave = clamp(tonumber(tr.octave) or 0, -7, 8),
-                clock_mult = clamp(tonumber(self.track_clock_mult[t]) or 1, 1, 8),
-                clock_div = clamp(tonumber(self.track_clock_div[t]) or 1, 1, 64),
-                arc = deep_copy_table(tr.arc or { pulses = 0, rotation = 1, variance = 0, mode = 1 })
-            }
-            for s = 1, track_step_limit do
-                if tr.gates[s] then
-                    snap.g[t][s] = 1
-                    snap.v[t][s] = clamp(tonumber(tr.vels[s]) or cfg.DEFAULT_VEL_LEVEL, 1, 15)
-                    if tc.type == "poly" then
-                        local pv = {}
-                        for i, d in ipairs(tr.pitches[s]) do pv[i] = d end
-                        snap.p[t][s] = pv
-                    else
-                        snap.p[t][s] = tr.pitches[s]
-                    end
-                end
-                if self.ratios[t] and self.ratios[t][s] then
-                    snap.r[t][s] = deep_copy_table(self.ratios[t][s])
-                end
-                if self.spice[t] and self.spice[t][s] then
-                    snap.sp[t][s] = deep_copy_table(self.spice[t][s])
-                end
-            end
-        end
-        self.save_slots[slot] = snap
-    end
-
-    function App:load_from_slot(slot)
-        if slot < 1 or slot > 8 then return end
-        local snap = self.save_slots[slot]
-        if not snap then return end
-        local track_step_limit = self:get_track_step_limit()
-        for t = 1, cfg.NUM_TRACKS do
-            local tr = self:ensure_track_state(t)
-            local tc = self.track_cfg[t]
-            self.ratios[t] = {}
-            self.spice[t] = {}
-            for s = 1, track_step_limit do
-                tr.gates[s] = false
-                tr.vels[s] = self:get_track_default_vel_level(t)
-                if tc.type == "poly" then tr.pitches[s] = { 1 } else tr.pitches[s] = 1 end
-            end
-            local sg = snap.g[t] or {}
-            local sp = snap.p[t] or {}
-            local sv = snap.v[t] or {}
-            local sr = snap.r[t] or {}
-            local ssp = snap.sp[t] or {}
-            local sm = snap.m[t] or {}
-            tr.start_step = self:clamp_track_step(sm.start_step, tr.start_step or 1)
-            tr.end_step = self:clamp_track_step(sm.end_step, tr.end_step or math.min(cfg.NUM_STEPS, track_step_limit))
-            tr.octave = clamp(tonumber(sm.octave) or tr.octave or 0, -7, 8)
-            tr.arc = deep_copy_table(sm.arc or tr.arc or { pulses = 0, rotation = 1, variance = 0, mode = 1 })
-            self.track_clock_mult[t] = clamp(tonumber(sm.clock_mult) or self.track_clock_mult[t] or 1, 1, 8)
-            self.track_clock_div[t] = clamp(tonumber(sm.clock_div) or self.track_clock_div[t] or 1, 1, 64)
-            self.track_transpose[t] = clamp(tonumber((snap.tt or {})[t]) or self.track_transpose[t] or 0, -96, 96)
-            for s = 1, track_step_limit do
-                if sg[s] then
-                    tr.gates[s] = true
-                    tr.vels[s] = clamp(tonumber(sv[s]) or cfg.DEFAULT_VEL_LEVEL, 1, 15)
-                    if tc.type == "poly" then
-                        local pv = sp[s]
-                        if type(pv) == "table" and #pv > 0 then
-                            local cp = {}
-                            for i, d in ipairs(pv) do
-                                cp[i] = clamp(tonumber(d) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
-                            end
-                            tr.pitches[s] = cp
-                        end
-                    else
-                        tr.pitches[s] = clamp(tonumber(sp[s]) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
-                    end
-                end
-                if sr[s] then self.ratios[t][s] = deep_copy_table(sr[s]) end
-                if ssp[s] then self.spice[t][s] = deep_copy_table(ssp[s]) end
-            end
-        end
-        self.key_transpose = clamp(tonumber(snap.key_transpose) or self.key_transpose or 0, -7, 8)
-        self:invalidate_step_cache()
-        self:request_arc_redraw()
-        self:request_redraw()
-        self:request_aux_redraw()
     end
 
 end

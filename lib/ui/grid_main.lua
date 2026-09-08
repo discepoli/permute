@@ -110,7 +110,7 @@ function M.install(App)
                 return
             end
 
-            if x == cfg.MOD.TEMP then
+            if x == cfg.MOD.TEMP and self.mod_held[cfg.MOD.SHIFT] then
                 local now = now_ms()
                 local use_fill = self:is_temp_button_fill_mode()
                 local latched = use_fill and self.fill_latched or self.temp_latched
@@ -172,32 +172,40 @@ function M.install(App)
             end
             self.mod_held[x] = true
             self.last_mod_pressed = x
-            if x == cfg.MOD.TEMP then self.temp_steps = {} end
+            if x == cfg.MOD.TEMP and self.mod_held[cfg.MOD.SHIFT] then self.temp_steps = {} end
             if x == cfg.MOD.RAND_NOTES then self.rand_notes_rolled = false end
             if x == cfg.MOD.RAND_STEPS then self.rand_steps_shuffled = false end
             if (x == cfg.MOD.START and self.mod_held[cfg.MOD.END_STEP]) or (x == cfg.MOD.END_STEP and self.mod_held[cfg.MOD.START]) then self.speed_mode = true end
-            if x == cfg.MOD.TEMP and self:is_temp_button_fill_mode() then
+            if x == cfg.MOD.TEMP and self.mod_held[cfg.MOD.SHIFT] and self:is_temp_button_fill_mode() then
                 self.fill_active = true
                 self.fill_applied = true
             end
+            if x == cfg.MOD.SHIFT and self.mod_held[cfg.MOD.TEMP] and not self:is_temp_button_fill_mode() then
+                self.temp_steps = {}
+            end
             if x == cfg.MOD.TAKEOVER and self.sel_track then self.takeover_mode = true end
         else
-            if x == cfg.MOD.TEMP and not self:is_temp_button_fill_mode() and self.temp_latched then
+            if x == cfg.MOD.TEMP and self:is_shift_temp_mode() and not self:is_temp_button_fill_mode() and self.temp_latched then
                 self:request_redraw()
                 return
             end
-            if x == cfg.MOD.TEMP and self:is_temp_button_fill_mode() and self.fill_latched then
+            if x == cfg.MOD.TEMP and self:is_shift_temp_mode() and self:is_temp_button_fill_mode() and self.fill_latched then
                 self:request_redraw()
                 return
             end
 
             self.mod_held[x] = nil
-            if x == cfg.MOD.TEMP and not self:is_temp_button_fill_mode() then self:clear_temp_steps() end
+            if x == cfg.MOD.SHIFT and self.mod_held[cfg.MOD.TEMP] and not self.temp_latched and not self.fill_latched then
+                if not self:is_temp_button_fill_mode() then self:clear_temp_steps() end
+            end
+            if x == cfg.MOD.TEMP and self:is_shift_temp_mode() and not self:is_temp_button_fill_mode() and not self.temp_latched then
+                self:clear_temp_steps()
+            end
             if x == cfg.MOD.START or x == cfg.MOD.END_STEP then self.speed_mode = false end
             if x == cfg.MOD.TAKEOVER and not self.takeover_mode then
                 self.transpose_takeover_mode = false
             end
-            if x == cfg.MOD.TEMP and self:is_temp_button_fill_mode() then
+            if x == cfg.MOD.TEMP and self:is_shift_temp_mode() and self:is_temp_button_fill_mode() then
                 self.fill_active = false
                 self.fill_applied = self.fill_latched
                 if not self.fill_latched then self:clear_fill_split_gates() end
@@ -240,9 +248,7 @@ function M.install(App)
         if z == 1 then
             self.dynamic_row_held[x] = true
             local should_push_undo = false
-            if self.mod_held[cfg.MOD.SHIFT] and self.mod_held[cfg.MOD.RATIOS] then
-                should_push_undo = x > 8
-            elseif self.mod_held[cfg.MOD.RATIOS] then
+            if self.mod_held[cfg.MOD.RATIOS] then
                 should_push_undo = true
             elseif self.held then
                 should_push_undo = true
@@ -252,14 +258,10 @@ function M.install(App)
             local applied_value = nil
             local applied_mod = self:get_active_mod_id()
 
-            if self.mod_held[cfg.MOD.SHIFT] and self.mod_held[cfg.MOD.RATIOS] then
-                if x <= 8 then
-                    self:save_to_slot(x)
-                    applied_value = "save " .. tostring(x)
-                else
-                    self:load_from_slot(x - 8)
-                    applied_value = "load " .. tostring(x - 8)
-                end
+            if self:is_pattern_slot_mode() then
+                self:request_dynamic_slot_switch(x)
+                applied_mod = cfg.MOD.TEMP
+                applied_value = "slot " .. tostring(x)
             elseif self.mod_held[cfg.MOD.SHIFT] and self.mod_held[cfg.MOD.RAND_STEPS] and self.sel_track then
                 self.track_rand_gate_prob[self.sel_track] = self:rand_prob_from_column(x)
                 applied_value = tostring(math.floor((self.track_rand_gate_prob[self.sel_track] * 100) + 0.5)) .. "%"
@@ -538,6 +540,24 @@ function M.install(App)
 
     function App:get_track_default_vel_level(track)
         return self:midi_to_vel_level(self:get_track_default_midi_velocity(track))
+    end
+
+    function App:draw_pattern_slot_track_row(t, y)
+        local active = clamp(tonumber(self.track_pattern_slot_active[t]) or 1, 1, cfg.NUM_STEPS)
+        for col = 1, cfg.NUM_STEPS do
+            local lv = 0
+            if col == active then
+                lv = 15
+            elseif self:track_slot_is_filled(t, col) then
+                lv = 5
+            end
+            if self.sel_track == t and lv > 0 then
+                lv = math.max(lv, 2)
+            end
+            if lv > 0 then
+                self:grid_led_main(col, y, lv)
+            end
+        end
     end
 
     function App:draw_split_track_row(t, y, tr, tc)
@@ -847,13 +867,15 @@ function M.install(App)
             return
         end
 
-        if self.mod_held[cfg.MOD.SHIFT] and self.mod_held[cfg.MOD.RATIOS] then
-            for x = 1, 16 do
-                if x <= 8 then
-                    self:grid_led_main(x, dyn_row, self.save_slots[x] and 8 or 3)
-                else
-                    self:grid_led_main(x, dyn_row, self.save_slots[x - 8] and 12 or 2)
+        if self:is_pattern_slot_mode() then
+            for x = 1, cfg.NUM_STEPS do
+                local filled_count = 0
+                for t = 1, cfg.NUM_TRACKS do
+                    if self:track_slot_is_filled(t, x) then filled_count = filled_count + 1 end
                 end
+                local lv = filled_count > 0 and math.min(4 + filled_count, 10) or 2
+                if self.dynamic_row_held and self.dynamic_row_held[x] then lv = 15 end
+                self:grid_led_main(x, dyn_row, lv)
             end
             return
         end
@@ -904,6 +926,8 @@ function M.install(App)
                 lv = (tonumber(self.beat_repeat_len) or 0) > 0 and 10 or 3
             elseif x == cfg.MOD.SHIFT or x == cfg.MOD.CLEAR then
                 lv = 0
+            elseif x == cfg.MOD.TEMP then
+                lv = self:is_pattern_slot_mode() and 15 or (self:is_shift_temp_mode() and 15 or 3)
             elseif x ~= 5 then
                 lv = 3
             end
@@ -1074,7 +1098,9 @@ function M.install(App)
                     view_page = self:get_track_view_page(self.sel_track or t)
                 end
 
-                if tc.type == "split" then
+                if self:is_pattern_slot_mode() then
+                    self:draw_pattern_slot_track_row(t, y)
+                elseif tc.type == "split" then
                     self:draw_split_track_row(t, y, tr, tc)
                 else
                 for col = 1, cfg.NUM_STEPS do

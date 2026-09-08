@@ -81,6 +81,8 @@ local DEFAULT_SETUP_BASE_IDS = {
     "permute_beat_repeat_mode",
     "permute_beat_repeat_direction",
     "permute_temp_button_mode",
+    "permute_pattern_slot_dynamic_mode",
+    "permute_pattern_slot_switch_timing",
     "permute_arc_k1_threshold",
     "permute_arc_k2_threshold",
     "permute_arc_k3_threshold",
@@ -406,6 +408,20 @@ function M.setup(app)
         app.temp_steps = {}
         app:request_redraw()
         app:request_aux_redraw()
+    end)
+
+    add_permute_section("permute_section_pattern_slots", "pattern slots", true)
+
+    params:add_option("permute_pattern_slot_dynamic_mode", "slot dynamic mode", { "last", "all", "only" }, 1)
+    params:set_action("permute_pattern_slot_dynamic_mode", function(v)
+        local modes = { "last", "all", "only" }
+        app.pattern_slot_dynamic_mode = modes[clamp(tonumber(v) or 1, 1, #modes)] or "last"
+    end)
+
+    params:add_option("permute_pattern_slot_switch_timing", "slot switch timing", { "immediate", "bar-end", "master-end" }, 1)
+    params:set_action("permute_pattern_slot_switch_timing", function(v)
+        local modes = { "immediate", "bar-end", "master-end" }
+        app.pattern_slot_switch_timing = modes[clamp(tonumber(v) or 1, 1, #modes)] or "immediate"
     end)
 
     add_permute_section("permute_section_note_shaping", "note shaping", true)

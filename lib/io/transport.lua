@@ -418,6 +418,7 @@ function M.install(App)
                     if len > 0 and ts % len == 0 then
                         self:apply_track_evolving_randomization(t)
                         self.track_loop_count[t] = (tonumber(self.track_loop_count[t]) or 1) + 1
+                        if self.on_track_pattern_loop_wrap then self:on_track_pattern_loop_wrap(t) end
                     end
                     self.track_steps[t] = ts + 1
                 else
@@ -541,6 +542,7 @@ function M.install(App)
                 if len > 0 and ts % len == 0 then
                     self:apply_track_evolving_randomization(t)
                     self.track_loop_count[t] = (tonumber(self.track_loop_count[t]) or 1) + 1
+                    if self.on_track_pattern_loop_wrap then self:on_track_pattern_loop_wrap(t) end
                 end
                 self.track_steps[t] = ts + 1
 
@@ -601,6 +603,9 @@ function M.install(App)
                 local max_len = clamp(tonumber(self.master_seq_len) or cfg.DEFAULT_MASTER_SEQ_LEN, 1, cfg.MAX_MASTER_SEQ_LEN)
                 if self.master_seq_counter >= max_len then
                     self.master_seq_counter = 0
+                    if self.apply_pending_master_pattern_switches then
+                        self:apply_pending_master_pattern_switches()
+                    end
                     self:reset_tracks_to_start_positions()
                 end
             end

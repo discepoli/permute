@@ -83,7 +83,13 @@ function App.new()
     self.beat_repeat_select_active = false
     self.beat_repeat_select_cycle = 0
     self.speed_mode = false
-    self.save_slots = {}
+    self.track_pattern_slots = {}
+    self.track_pattern_slot_active = {}
+    self.track_pattern_slot_dirty = {}
+    self.track_pattern_slot_highest = {}
+    self.pending_pattern_switches = {}
+    self.pattern_slot_dynamic_mode = "last"
+    self.pattern_slot_switch_timing = "immediate"
     self.fill_patterns = {}
     self.ratios = {}
     self.fill_active = false
@@ -321,6 +327,7 @@ function App.new()
         if self.track_cfg[t].type == "split" then
             self:ensure_split_track_state(t)
         end
+        self:init_track_pattern_slots(t)
     end
 
     for s = 1, cfg.NUM_STEPS do
@@ -343,6 +350,7 @@ include("lib/sequencer/randomization").install(App)
 include("lib/sequencer/transpose_seq").install(App)
 include("lib/sequencer/beat_repeat").install(App)
 include("lib/sequencer/split").install(App)
+include("lib/sequencer/pattern_slots").install(App)
 include("lib/io/midi").install(App)
 include("lib/io/crow").install(App)
 include("lib/io/transport").install(App)
