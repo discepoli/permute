@@ -672,6 +672,7 @@ function M.install(App)
     function App:start()
         if self.playing then return end
         self.playing = true
+        if self.clock_monitor_set_playing then self:clock_monitor_set_playing(true, "local_start") end
         self:reset_playheads()
         self:update_clock_tempo(self.tempo_bpm)
         self:reset_external_clock_sync()
@@ -712,6 +713,9 @@ function M.install(App)
         end)
         if not ok then
             local line = string.format("[%s] transport error: %s", os.date("%H:%M:%S"), tostring(err))
+            if self.clock_monitor_add_transport_error then
+                self:clock_monitor_add_transport_error(err)
+            end
             if self.clock_debug_enabled and self.clock_debug_log then
                 self:clock_debug_log(line)
             end
@@ -722,6 +726,7 @@ function M.install(App)
 
     function App:stop()
         self.playing = false
+        if self.clock_monitor_set_playing then self:clock_monitor_set_playing(false, "local_stop") end
         if self.clock_debug_enabled then self:clock_debug_reset_state() end
         self:clear_realtime_row_holds()
         if not self.use_midi_clock and self.send_midi_start_stop_out then

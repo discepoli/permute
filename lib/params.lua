@@ -38,6 +38,7 @@ local DEFAULT_SETUP_BASE_IDS = {
     "permute_send_start_stop_out",
     "permute_clock_debug",
     "permute_clock_debug_notes",
+    "permute_transport_monitor",
     "permute_midi_out",
     "permute_midi_out_2",
     "permute_midi_out_3",
@@ -140,7 +141,7 @@ function M.setup(app)
     local section_count = 8
     local spacer_count = section_count - 1
     local permute_section_count = (params and params.add_separator) and (section_count + spacer_count) or 0
-    params:add_group("permute_seq", "permute", 49 + permute_section_count)
+    params:add_group("permute_seq", "permute", 50 + permute_section_count)
 
     add_permute_section("permute_section_music", "music")
 
@@ -274,6 +275,11 @@ function M.setup(app)
     params:add_option("permute_clock_debug_notes", "note timing log", { "off", "on" }, 1)
     params:set_action("permute_clock_debug_notes", function(v)
         app.clock_debug_note_events = (v == 2)
+    end)
+
+    params:add_option("permute_transport_monitor", "transport monitor", { "off", "on" }, 1)
+    params:set_action("permute_transport_monitor", function(v)
+        app:set_clock_monitor_enabled(v == 2)
     end)
 
     params:add_option("permute_midi_out", "midi out port", midi_port_options(), 1)

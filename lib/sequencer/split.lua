@@ -301,6 +301,15 @@ function M.reset_cursors(app, track, sp)
     app.split_arc_pitch_pos[t] = 1
 end
 
+function M.get_note_len_ticks(app, track)
+    local t = clamp(tonumber(track) or 1, 1, cfg.NUM_TRACKS)
+    return clamp(
+        tonumber(app.track_gate_ticks and app.track_gate_ticks[t]) or cfg.MIDI_CLOCK_TICKS_PER_STEP,
+        1,
+        24
+    )
+end
+
 function M.process_step(app, track, tr, tc, pitch_ctx)
     local t = clamp(tonumber(track) or 1, 1, cfg.NUM_TRACKS)
     local sp = M.ensure_split_state(tr)
@@ -315,6 +324,7 @@ function M.process_step(app, track, tr, tc, pitch_ctx)
     local ratio_allows = app:step_ratio_allows_play(t, gate_idx)
     local stage_steps = M.get_effective_stage_steps(app, track, tr, sp, gate_idx)
     local substep = clamp(tonumber(app.split_gate_substep[t]) or 0, 0, num)
+    local note_len_ticks = M.get_note_len_ticks(app, t)
 
     local sp_pitch = app.spice[t] and app.spice[t][pitch_idx]
     local spice_offset = sp_pitch and sp_pitch.current or 0
@@ -324,7 +334,7 @@ function M.process_step(app, track, tr, tc, pitch_ctx)
         advance_pitch_substep = false,
         advance_pitch_stage = false,
         advance_gate = false,
-        note_len_ticks = cfg.MIDI_CLOCK_TICKS_PER_STEP,
+        note_len_ticks = note_len_ticks,
         degree = sp.pitches[pitch_idx],
         spice_offset = spice_offset,
         gate_idx = gate_idx,
@@ -342,7 +352,7 @@ function M.process_step(app, track, tr, tc, pitch_ctx)
     if playback == M.GATE_STAGE_PLAYBACK.HELD then
         if not app.split_gate_hold_active[t] then
             result.should_play = true
-            result.note_len_ticks = stage_steps * cfg.MIDI_CLOCK_TICKS_PER_STEP
+            result.note_len_ticks = stage_steps * note_len_ticks
             app.split_gate_hold_active[t] = true
         end
         substep = substep + 1
@@ -371,7 +381,7 @@ function M.process_step(app, track, tr, tc, pitch_ctx)
     end
 
     result.should_play = true
-    result.note_len_ticks = cfg.MIDI_CLOCK_TICKS_PER_STEP
+    result.note_len_ticks = note_len_ticks
 
     if pitch_advance_steps then
         result.advance_pitch_substep = true

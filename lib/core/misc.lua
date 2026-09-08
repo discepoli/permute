@@ -197,6 +197,10 @@ function M.install(App)
                 end
             end
 
+            if self.clock_monitor_poll then
+                self:clock_monitor_poll()
+            end
+
             if self.grid_dirty then
                 self:redraw_main_grid()
                 self.grid_dirty = false
@@ -238,6 +242,7 @@ function M.install(App)
         if self.grid_timer then self.grid_timer:stop() end
         if self.gc_metro then self.gc_metro:stop() end
         if self.clock_debug_enabled then self:set_clock_debug_enabled(false) end
+        if self.clock_monitor_enabled then self:set_clock_monitor_enabled(false) end
         if self.arc_dev then
             self.arc_dev:all(0)
             self.arc_dev:refresh()
