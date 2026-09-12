@@ -210,6 +210,9 @@ function M.install(App)
                 self.fill_applied = self.fill_latched
                 if not self.fill_latched then self:clear_fill_split_gates() end
             end
+            if x == cfg.MOD.TEMP and not self.temp_latched and not self.fill_latched then
+                self:clear_pattern_slot_copy_state()
+            end
             if x == cfg.MOD.RAND_NOTES then self.rand_notes_rolled = false end
             if x == cfg.MOD.RAND_STEPS then self.rand_steps_shuffled = false end
             if x == cfg.MOD.BEAT_RPT then
@@ -259,6 +262,7 @@ function M.install(App)
             local applied_mod = self:get_active_mod_id()
 
             if self:is_pattern_slot_mode() then
+                self:clear_pattern_slot_copy_state()
                 self:request_dynamic_slot_switch(x)
                 applied_mod = cfg.MOD.TEMP
                 applied_value = "slot " .. tostring(x)
@@ -544,12 +548,15 @@ function M.install(App)
 
     function App:draw_pattern_slot_track_row(t, y)
         local active = clamp(tonumber(self.track_pattern_slot_active[t]) or 1, 1, cfg.NUM_STEPS)
+        local paste_armed = self:is_pattern_slot_paste_armed(t)
         for col = 1, cfg.NUM_STEPS do
             local lv = 0
             if col == active then
-                lv = 15
+                lv = paste_armed and 12 or 15
             elseif self:track_slot_is_filled(t, col) then
-                lv = 5
+                lv = paste_armed and 8 or 5
+            elseif paste_armed then
+                lv = 3
             end
             if self.sel_track == t and lv > 0 then
                 lv = math.max(lv, 2)

@@ -88,6 +88,8 @@ function App.new()
     self.track_pattern_slot_dirty = {}
     self.track_pattern_slot_highest = {}
     self.pending_pattern_switches = {}
+    self.pattern_slot_paste_pending = nil
+    self.pattern_slot_last_tap = nil
     self.pattern_slot_dynamic_mode = "last"
     self.pattern_slot_switch_timing = "immediate"
     self.fill_patterns = {}

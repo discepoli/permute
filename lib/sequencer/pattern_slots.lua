@@ -1,6 +1,7 @@
 local H = include("lib/core/util")
 local cfg = H.cfg
 local clamp = H.clamp
+local now_ms = H.now_ms
 local deep_copy_table = H.deep_copy_table
 
 local NUM_SLOTS = cfg.NUM_STEPS
@@ -62,6 +63,95 @@ function M.install(App)
         t = clamp(tonumber(t) or 1, 1, cfg.NUM_TRACKS)
         self:init_track_pattern_slots(t)
         self.track_pattern_slot_dirty[t] = true
+    end
+
+    function App:clear_pattern_slot_copy_state()
+        self.pattern_slot_paste_pending = nil
+        self.pattern_slot_last_tap = nil
+    end
+
+    function App:is_pattern_slot_paste_armed(t)
+        t = clamp(tonumber(t) or 1, 1, cfg.NUM_TRACKS)
+        local pending = self.pattern_slot_paste_pending
+        return type(pending) == "table" and pending.track == t and type(pending.snap) == "table"
+    end
+
+    function App:copy_active_pattern_slot(t)
+        t = clamp(tonumber(t) or 1, 1, cfg.NUM_TRACKS)
+        self:init_track_pattern_slots(t)
+        local active = slot_in_range(self.track_pattern_slot_active[t])
+        local snap = self:export_track_snapshot(t)
+        self.track_pattern_slots[t][active] = deep_copy_table(snap)
+        self.track_pattern_slot_dirty[t] = false
+        if active > (self.track_pattern_slot_highest[t] or 0) then
+            self.track_pattern_slot_highest[t] = active
+        end
+        self.pattern_slot_paste_pending = { track = t, snap = deep_copy_table(snap) }
+        self:flash_mod_applied(cfg.MOD.TEMP, "copy " .. tostring(active))
+        self:request_redraw()
+    end
+
+    function App:paste_pattern_slot(t, slot)
+        t = clamp(tonumber(t) or 1, 1, cfg.NUM_TRACKS)
+        slot = slot_in_range(slot)
+        local pending = self.pattern_slot_paste_pending
+        if type(pending) ~= "table" or pending.track ~= t or type(pending.snap) ~= "table" then
+            return false
+        end
+
+        self:init_track_pattern_slots(t)
+        self:save_track_to_active_slot(t)
+        local snap_copy = deep_copy_table(pending.snap)
+        self.track_pattern_slots[t][slot] = snap_copy
+        if slot > (self.track_pattern_slot_highest[t] or 0) then
+            self.track_pattern_slot_highest[t] = slot
+        end
+        self.pattern_slot_paste_pending = nil
+        self.pattern_slot_last_tap = nil
+        self:flash_mod_applied(cfg.MOD.TEMP, "paste " .. tostring(slot))
+
+        local active = slot_in_range(self.track_pattern_slot_active[t])
+        if slot == active then
+            self:import_track_snapshot(t, snap_copy)
+            self.track_pattern_slot_dirty[t] = false
+            self:request_redraw()
+            self:request_aux_redraw()
+            self:request_arc_redraw()
+            return true
+        end
+
+        self:request_track_slot_switch(t, slot)
+        return true
+    end
+
+    function App:handle_pattern_slot_press(t, slot)
+        t = clamp(tonumber(t) or 1, 1, cfg.NUM_TRACKS)
+        slot = slot_in_range(slot)
+        self:init_track_pattern_slots(t)
+
+        if self:is_pattern_slot_paste_armed(t) then
+            self:paste_pattern_slot(t, slot)
+            return
+        end
+
+        local active = slot_in_range(self.track_pattern_slot_active[t])
+        if slot == active then
+            local now = now_ms()
+            local last = self.pattern_slot_last_tap
+            local window = tonumber(self.mod_double_tap_ms) or 250
+            if type(last) == "table" and last.track == t and last.slot == slot
+                and (now - (tonumber(last.time) or 0)) <= window then
+                self.pattern_slot_last_tap = nil
+                self:copy_active_pattern_slot(t)
+                return
+            end
+            self.pattern_slot_last_tap = { track = t, slot = slot, time = now }
+            return
+        end
+
+        self.pattern_slot_last_tap = nil
+        self:request_track_slot_switch(t, slot)
+        self:flash_mod_applied(cfg.MOD.TEMP, "slot " .. tostring(slot))
     end
 
     function App:export_track_snapshot(t)

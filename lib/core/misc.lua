@@ -46,22 +46,27 @@ function M.install(App)
 
     function App:count_manual_ties_ahead(step, tr, step_cache)
         if type(step_cache) ~= "table" then return 0 end
-        local order = self:get_track_step_order(tr)
-        local idx_of = {}
-        for i, ordered_step in ipairs(order) do
-            idx_of[ordered_step] = i
-        end
-        local idx = idx_of[step]
-        if not idx then return 0 end
+        local lo, hi, reverse = self:get_track_bounds(tr)
+        if step < lo or step > hi then return 0 end
 
         local tied = 0
-        for i = idx + 1, #order do
-            local next_step = order[i]
-            local next_data = step_cache[next_step]
-            if next_data and next_data.source == "manual" and next_data.tie then
-                tied = tied + 1
-            else
-                break
+        if reverse then
+            for next_step = step - 1, lo, -1 do
+                local next_data = step_cache[next_step]
+                if next_data and next_data.source == "manual" and next_data.tie then
+                    tied = tied + 1
+                else
+                    break
+                end
+            end
+        else
+            for next_step = step + 1, hi do
+                local next_data = step_cache[next_step]
+                if next_data and next_data.source == "manual" and next_data.tie then
+                    tied = tied + 1
+                else
+                    break
+                end
             end
         end
         return tied

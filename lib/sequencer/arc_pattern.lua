@@ -91,7 +91,8 @@ function M.install(App)
         end
         local tr = self.tracks[track]
         if not tr then return cfg.NUM_STEPS end
-        return math.max(1, #self:get_track_step_order(tr))
+        local lo, hi = self:get_track_bounds(tr)
+        return math.max(1, hi - lo + 1)
     end
 
     function App:get_split_gate_step_order(tr)

@@ -1124,8 +1124,7 @@ function M.install(App)
         if t and t >= 1 and t <= cfg.NUM_TRACKS then
             if self:is_pattern_slot_mode() then
                 if z == 1 and x >= 1 and x <= cfg.NUM_STEPS then
-                    self:request_track_slot_switch(t, x)
-                    self:flash_mod_applied(cfg.MOD.TEMP, "slot " .. tostring(x))
+                    self:handle_pattern_slot_press(t, x)
                 end
                 return
             end
