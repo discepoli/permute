@@ -517,34 +517,6 @@ function M.setup(app)
         app.arc_delta_thresholds[4] = clamp(tonumber(v) or 16, 1, 32)
     end)
 
-    add_permute_section("permute_section_actions", "actions", true)
-
-    params:add_trigger("permute_panic", "panic")
-    params:set_action("permute_panic", function()
-        app:stop_all_notes()
-    end)
-
-    params:add_trigger("permute_start", "start")
-    params:set_action("permute_start", function() app:start() end)
-
-    params:add_trigger("permute_stop", "stop")
-    params:set_action("permute_stop", function() app:stop() end)
-
-    params:add_trigger("permute_save_default", "save as default")
-    params:set_action("permute_save_default", function()
-        app:save_default_setup(true)
-    end)
-
-    params:add_trigger("permute_reload_default", "reload default")
-    params:set_action("permute_reload_default", function()
-        app:load_default_setup(true)
-    end)
-
-    params:add_trigger("permute_clear_default", "clear default (factory)")
-    params:set_action("permute_clear_default", function()
-        app:clear_default_setup(true)
-    end)
-
     for t = 1, cfg.NUM_TRACKS do
         local track = t
         local tc = app.track_cfg[track]
@@ -677,6 +649,34 @@ function M.setup(app)
             if app.lpp_enabled and app.lpp_refresh_octave_leds then app:lpp_refresh_octave_leds() end
         end)
     end
+
+    add_permute_section("permute_section_actions", "actions", true)
+
+    params:add_trigger("permute_panic", "panic")
+    params:set_action("permute_panic", function()
+        app:stop_all_notes()
+    end)
+
+    params:add_trigger("permute_start", "start")
+    params:set_action("permute_start", function() app:start() end)
+
+    params:add_trigger("permute_stop", "stop")
+    params:set_action("permute_stop", function() app:stop() end)
+
+    params:add_trigger("permute_save_default", "save as default")
+    params:set_action("permute_save_default", function()
+        app:save_default_setup(true)
+    end)
+
+    params:add_trigger("permute_reload_default", "reload default")
+    params:set_action("permute_reload_default", function()
+        app:load_default_setup(true)
+    end)
+
+    params:add_trigger("permute_clear_default", "clear default (factory)")
+    params:set_action("permute_clear_default", function()
+        app:clear_default_setup(true)
+    end)
 
     params.action_write = function(filename, name, number)
         if prev_action_write then prev_action_write(filename, name, number) end
