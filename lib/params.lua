@@ -10,6 +10,9 @@ local BEAT_REPEAT_MODES = { "full-row", "one-handed", "step-select" }
 local TRANSPOSE_MODES = { "semitone", "scale degree" }
 local RESET_TIMING_OPTIONS = { "instant", "next beat" }
 local LPP_COLOR_ZONES = { "zone_b", "zone_c", "zone_d", "zone_e" }
+-- All parameters from "music" through "arc controls". Keep this in sync when
+-- adding or removing a parameter before the per-track configuration groups.
+local MAIN_PARAM_COUNT = 46
 local SCALE_DEGREE_LABELS = {
     diatonic = { "I", "ii", "iii", "IV", "V", "vi", "vii" },
     pentatonic = { "I", "ii", "iii", "V", "vi" },
@@ -143,7 +146,7 @@ function M.setup(app)
     local section_count = 8
     local spacer_count = section_count - 1
     local permute_section_count = (params and params.add_separator) and (section_count + spacer_count) or 0
-    params:add_group("permute_seq", "permute", 50 + permute_section_count)
+    params:add_group("permute_seq", "permute", MAIN_PARAM_COUNT + permute_section_count)
 
     add_permute_section("permute_section_music", "music")
 

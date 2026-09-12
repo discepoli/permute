@@ -356,7 +356,14 @@ The LPP color params control the palette values sent to each melodic zone, the c
 
 ## Parameters
 
-Open `PARAMS > permute` for configuration.
+The `PARAMS` list is ordered as follows:
+
+1. `permute`, containing the Music through Arc controls below.
+2. `track 1 config` through `track 14 config`.
+3. `lpp integration`.
+4. the Actions controls.
+
+Open `PARAMS > permute` for the main sequencer configuration. The per-track, LPP, and Actions entries follow it at the top level in the order shown above.
 
 ### Music
 
@@ -447,6 +454,8 @@ Open `PARAMS > permute` for configuration.
 - `lpp drum 1 color` through `lpp drum 8 color`: palette values for visible drum pads.
 
 ### Actions
+
+Actions appear after `lpp integration`, at the bottom of the main parameter list.
 
 - `panic`: send note-off messages for every active note.
 - `start` and `stop`: control the transport.
