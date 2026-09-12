@@ -16,8 +16,6 @@ Press the Takeover modifier to edit the selected track as a full-height pitch or
 
 Use `save as default` in the params menu to remember your usual device routing and track setup at startup. Save a norns PSET when you want to store a complete musical snapshot, including pattern data.
 
-![permute default](images/permute_default.png)
-
 ## Grid cheat sheet
 
 On a 16×16 grid, rows 1-14 are tracks, row 15 is the dynamic row, and row 16 is the modifier row. On a 16×8 grid, rows 1-6 are tracks, row 7 is dynamic, and row 8 is modifiers.
