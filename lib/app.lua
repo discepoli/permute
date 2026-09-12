@@ -36,6 +36,7 @@ function App.new()
     self.clock_ticks = 0
     self.transport_clock = 0
     self.active_note_offs = {}
+    self.active_scheduled_note_ons = {}
 
     self.last_redraw_time = 0
     self.redraw_min_ms = cfg.DEFAULT_REDRAW_MIN_MS
@@ -47,6 +48,14 @@ function App.new()
     self.track_clock_mult = {}
     self.track_clock_phase = {}
     self.track_loop_count = {}
+    self.split_gate_pos = {}
+    self.split_pitch_pos = {}
+    self.split_gate_substep = {}
+    self.split_gate_hold_active = {}
+    self.split_arc_pitch_pos = {}
+    self.split_edit = nil
+    self.temp_split_gates = {}
+    self.fill_split_gates = {}
     self.track_state_validated_step_limit = {}
 
     self.mod_held = {}
@@ -114,6 +123,7 @@ function App.new()
     self.external_clock_subtick_id = nil
     self.external_clock_subtick_generation = 0
     self.external_clock_subtick_progress = 0
+    self.pending_follower_start_hit = false
     self.transpose_mode = "semitone"
     self.transpose_takeover_mode = false
     self.transpose_seq_enabled = false
@@ -184,7 +194,6 @@ function App.new()
     self.midi_out_ports = { 1 }
     self.midi_out_ports_snapshot = { 1 }
     self.midi_active_ports = { [1] = true }
-    self.midi_clock_in_port = nil
     self.midi_in_port_slots = { 0, 0 }
     self.midi_in_ports = {}
     self.midi_in_ports_snapshot = {}
@@ -285,6 +294,14 @@ function App.new()
         self.track_gate_ticks[t] = (self.track_cfg[t].type == "drum") and self.drum_gate_clocks or
             self.melody_gate_clocks
         self.track_hold_tie_len_enabled[t] = true
+        self.split_gate_pos[t] = 1
+        self.split_pitch_pos[t] = 1
+        self.split_gate_substep[t] = 0
+        self.split_gate_hold_active[t] = false
+        self.split_arc_pitch_pos[t] = 1
+        if self.track_cfg[t].type == "split" then
+            self:ensure_split_track_state(t)
+        end
     end
 
     for s = 1, cfg.NUM_STEPS do
@@ -305,6 +322,7 @@ include("lib/sequencer/ratios").install(App)
 include("lib/sequencer/randomization").install(App)
 include("lib/sequencer/transpose_seq").install(App)
 include("lib/sequencer/beat_repeat").install(App)
+include("lib/sequencer/split").install(App)
 include("lib/io/midi").install(App)
 include("lib/io/crow").install(App)
 include("lib/io/transport").install(App)

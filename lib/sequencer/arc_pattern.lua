@@ -30,22 +30,35 @@ function M.install(App)
         end
     end
 
-    function App:normalize_arc_mode(mode)
+    function App:normalize_arc_mode(mode, track)
+        track = clamp(tonumber(track) or tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+        local tc = self.track_cfg[track]
+        if tc and tc.type == "split" then
+            local presets = cfg.ARC_SPLIT_PLAYBACK_PRESETS or {}
+            return clamp(tonumber(mode) or 1, 1, math.max(1, #presets))
+        end
         return clamp(tonumber(mode) or 1, 1, #ARC_VARIANCE_MODES)
     end
 
-    function App:get_arc_mode_name(mode)
-        return ARC_VARIANCE_MODES[self:normalize_arc_mode(mode)]
+    function App:get_arc_mode_name(mode, track)
+        track = clamp(tonumber(track) or tonumber(self.sel_track) or 1, 1, cfg.NUM_TRACKS)
+        local tc = self.track_cfg[track]
+        if tc and tc.type == "split" then
+            local presets = cfg.ARC_SPLIT_PLAYBACK_PRESETS or {}
+            local preset = presets[self:normalize_arc_mode(mode, track)]
+            return (preset and preset.name) or "?"
+        end
+        return ARC_VARIANCE_MODES[self:normalize_arc_mode(mode, track)]
     end
 
     function App:get_arc_state(track)
         local tr = self:ensure_track_state(track)
         if not tr then return nil end
         if type(tr.arc) ~= "table" then tr.arc = {} end
-        tr.arc.pulses = clamp(tonumber(tr.arc.pulses) or 0, 0, self:get_track_step_limit())
+        tr.arc.pulses = clamp(tonumber(tr.arc.pulses) or 0, 0, self:get_arc_span_length(track))
         tr.arc.rotation = math.floor(tonumber(tr.arc.rotation) or 1)
         tr.arc.variance = clamp(tonumber(tr.arc.variance) or 0, 0, 100)
-        tr.arc.mode = self:normalize_arc_mode(tr.arc.mode)
+        tr.arc.mode = self:normalize_arc_mode(tr.arc.mode, track)
         return tr.arc
     end
 
@@ -61,12 +74,61 @@ function M.install(App)
         return ((s - 1) % 4) == 0
     end
 
+    function App:get_arc_span_length(track)
+        local tc = self.track_cfg[track]
+        if tc and tc.type == "split" then
+            local tr = self.tracks[track]
+            local sp = tr and tr.split
+            if type(sp) == "table" then
+                local lo = clamp(tonumber(sp.gate_start) or 1, 1, cfg.SPLIT_NUM_GATES or 8)
+                local hi = clamp(tonumber(sp.gate_end) or cfg.SPLIT_NUM_GATES or 8, 1, cfg.SPLIT_NUM_GATES or 8)
+                if hi < lo then lo, hi = hi, lo end
+                return math.max(1, hi - lo + 1)
+            end
+            return cfg.SPLIT_NUM_GATES or 8
+        end
+        local tr = self.tracks[track]
+        if not tr then return cfg.NUM_STEPS end
+        return math.max(1, #self:get_track_step_order(tr))
+    end
+
+    function App:get_split_gate_step_order(tr)
+        local sp = tr and tr.split
+        if type(sp) ~= "table" then return {} end
+        local lo = clamp(tonumber(sp.gate_start) or 1, 1, cfg.SPLIT_NUM_GATES or 8)
+        local hi = clamp(tonumber(sp.gate_end) or cfg.SPLIT_NUM_GATES or 8, 1, cfg.SPLIT_NUM_GATES or 8)
+        if hi < lo then lo, hi = hi, lo end
+        local order = {}
+        for i = lo, hi do order[#order + 1] = i end
+        return order
+    end
+
+    function App:build_split_arc_pitch_sequence(track, tr, sp)
+        tr = tr or self:ensure_track_state(track)
+        sp = sp or (tr and self:ensure_split_track_state(track))
+        if not tr or not sp then return {} end
+
+        local pitch_lo = clamp(tonumber(sp.pitch_start) or 1, 1, cfg.SPLIT_NUM_GATES or 8)
+        local pitch_hi = clamp(tonumber(sp.pitch_end) or cfg.SPLIT_NUM_GATES or 8, 1, cfg.SPLIT_NUM_GATES or 8)
+        if pitch_hi < pitch_lo then pitch_lo, pitch_hi = pitch_hi, pitch_lo end
+
+        local base = {}
+        for i = pitch_lo, pitch_hi do base[#base + 1] = i end
+        return base
+    end
+
     function App:get_arc_pattern(track)
         local tr = self:ensure_track_state(track)
         local arc_state = self:get_arc_state(track)
+        local tc = self.track_cfg[track]
         if not tr or not arc_state then return {}, {}, {}, {} end
 
-        local order = self:get_track_step_order(tr)
+        local order
+        if tc and tc.type == "split" then
+            order = self:get_split_gate_step_order(tr)
+        else
+            order = self:get_track_step_order(tr)
+        end
         local len = #order
         local active = {}
         local positions = {}
@@ -178,7 +240,18 @@ function M.install(App)
         if not tr or not tc then return {} end
         local rev = self.step_cache_rev[track] or 0
         local meta = self.step_cache_meta[track]
-        if meta and meta.rev == rev and meta.tc_type == tc.type and meta.start_step == tr.start_step and meta.end_step == tr.end_step then
+        local split_sig = nil
+        if tc.type == "split" and tr.split then
+            local sp = self:ensure_split_track_state(track)
+            split_sig = table.concat({
+                tostring(sp.gate_start),
+                tostring(sp.gate_end),
+                tostring(sp.pitch_start),
+                tostring(sp.pitch_end),
+            }, "|")
+        end
+        if meta and meta.rev == rev and meta.tc_type == tc.type and meta.start_step == tr.start_step
+            and meta.end_step == tr.end_step and meta.split_sig == split_sig then
             return self.step_cache[track] or {}
         end
 
@@ -186,6 +259,17 @@ function M.install(App)
         local order, active, positions, phase_positions = self:get_arc_pattern(track)
         local cache = {}
 
+        if tc.type == "split" then
+            local sp = self:ensure_split_track_state(track)
+            for gate_idx = 1, cfg.SPLIT_NUM_GATES or 8 do
+                if sp.gates[gate_idx] then
+                    cache[gate_idx] = {
+                        source = "manual",
+                        gate = true,
+                    }
+                end
+            end
+        else
         local step_limit = self:get_track_step_limit()
         for s = 1, step_limit do
             if tr.gates[s] then
@@ -197,9 +281,13 @@ function M.install(App)
                 }
             end
         end
+        end
 
         for _, step in ipairs(order) do
             if active[step] and not cache[step] then
+                if tc.type == "split" then
+                    cache[step] = { source = "arc", gate = true }
+                else
                 local pos = phase_positions[step] or positions[step] or 1
                 local len = #order
                 local variance_amount = clamp(tonumber(arc_state.variance) or 0, 0, 100)
@@ -242,6 +330,7 @@ function M.install(App)
                         pitch = clamp((tonumber(base_degree) or 1) + shift, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
                     }
                 end
+                end
             end
         end
 
@@ -251,6 +340,7 @@ function M.install(App)
             tc_type = tc.type,
             start_step = tr.start_step,
             end_step = tr.end_step,
+            split_sig = split_sig,
         }
         return cache
     end

@@ -53,6 +53,8 @@ function M.install(App)
         local arc_state = self:get_arc_state(t)
         local order, active = self:get_arc_pattern(t)
         local len = #order
+        local tc = self.track_cfg[t]
+        local is_split = tc and tc.type == "split"
 
         if len > 0 then
             for idx, step in ipairs(order) do
@@ -70,7 +72,7 @@ function M.install(App)
             dev:led(3, led, led <= variance_fill and 12 or 2)
         end
 
-        local modes = #ARC_VARIANCE_MODES
+        local modes = is_split and #(cfg.ARC_SPLIT_PLAYBACK_PRESETS or {}) or #ARC_VARIANCE_MODES
         for idx = 1, modes do
             local start_led = math.floor(((idx - 1) * 64) / modes) + 1
             local end_led = math.floor((idx * 64) / modes)
@@ -117,8 +119,10 @@ function M.install(App)
         local tr = self:ensure_track_state(t)
         local arc_state = self:get_arc_state(t)
         if not tr or not arc_state then return end
+        local tc = self.track_cfg[t]
+        local is_split = tc and tc.type == "split"
 
-        local span_len = #self:get_track_step_order(tr)
+        local span_len = self:get_arc_span_length(t)
         local changed = false
         local label = nil
         local value = nil
@@ -152,7 +156,7 @@ function M.install(App)
                 if next_variance ~= arc_state.variance then
                     arc_state.variance = next_variance
                     changed = true
-                    label = "arc variance"
+                    label = is_split and "arc steps" or "arc variance"
                     value = tostring(next_variance) .. "%"
                 end
             end
@@ -160,12 +164,17 @@ function M.install(App)
             local steps = self:consume_arc_delta(n, d, self.arc_delta_thresholds[4] or ARC_DELTA_THRESHOLDS[4])
             if steps ~= 0 then
                 self:begin_arc_history_snapshot()
-                local next_mode = clamp((arc_state.mode or 1) + steps, 1, #ARC_VARIANCE_MODES)
+                local mode_max = is_split and #(cfg.ARC_SPLIT_PLAYBACK_PRESETS or {}) or #ARC_VARIANCE_MODES
+                local next_mode = clamp((arc_state.mode or 1) + steps, 1, mode_max)
                 if next_mode ~= arc_state.mode then
                     arc_state.mode = next_mode
+                    if is_split then
+                        self.split_gate_substep[t] = 0
+                        self.split_gate_hold_active[t] = false
+                    end
                     changed = true
-                    label = "arc mode"
-                    value = self:get_arc_mode_name(next_mode)
+                    label = is_split and "arc playback" or "arc mode"
+                    value = self:get_arc_mode_name(next_mode, t)
                 end
             end
         end

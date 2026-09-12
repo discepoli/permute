@@ -148,6 +148,7 @@ function M.install(App)
         self.clock_ticks = 0
         self.transport_clock = 0
         self.active_note_offs = {}
+        self.active_scheduled_note_ons = {}
         self.beat_repeat_start = 0
         self.beat_repeat_cycle = 0
         self.beat_repeat_anchor = {}
@@ -161,6 +162,7 @@ function M.install(App)
             self.track_clock_phase[t] = 0
             self.track_loop_count[t] = 1
             self:set_track_playhead_page(t, self:get_track_view_page(t))
+            self:reset_split_cursors(t)
         end
         self:request_redraw()
         self:request_aux_redraw()
@@ -205,10 +207,10 @@ function M.install(App)
         if not tr.vels then tr.vels = {} end
         if not tr.pitches then tr.pitches = {} end
         if type(tr.arc) ~= "table" then tr.arc = {} end
-        tr.arc.pulses = clamp(tonumber(tr.arc.pulses) or 0, 0, step_limit)
+        tr.arc.pulses = clamp(tonumber(tr.arc.pulses) or 0, 0, self:get_arc_span_length(t))
         tr.arc.rotation = math.floor(tonumber(tr.arc.rotation) or 1)
         tr.arc.variance = clamp(tonumber(tr.arc.variance) or 0, 0, 100)
-        tr.arc.mode = self:normalize_arc_mode(tr.arc.mode)
+        tr.arc.mode = self:normalize_arc_mode(tr.arc.mode, t)
         if not self.ratios[t] then self.ratios[t] = {} end
         if not self.spice[t] then self.spice[t] = {} end
         if not self.track_steps[t] then self.track_steps[t] = 1 end
@@ -237,7 +239,9 @@ function M.install(App)
                 if tr.ties[s] == nil then tr.ties[s] = false end
                 if not tr.gates[s] then tr.ties[s] = false end
                 tr.vels[s] = clamp(tonumber(tr.vels[s]) or cfg.DEFAULT_VEL_LEVEL, 1, 15)
-                if tc and tc.type == "poly" then
+                if tc and tc.type == "split" then
+                    self:ensure_split_track_state(t)
+                elseif tc and tc.type == "poly" then
                     local pv = tr.pitches[s]
                     if type(pv) ~= "table" then
                         pv = { clamp(tonumber(pv) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE) }
@@ -267,7 +271,7 @@ function M.install(App)
         if t == nil then return end
         local track = tonumber(t)
         if not track or track < 1 or track > cfg.NUM_TRACKS then return end
-        if new_type ~= "drum" and new_type ~= "mono" and new_type ~= "poly" then return end
+        if new_type ~= "drum" and new_type ~= "mono" and new_type ~= "poly" and new_type ~= "split" then return end
 
         local tc = self.track_cfg[track]
         if not tc or tc.type == new_type then return end
@@ -287,6 +291,12 @@ function M.install(App)
                 if type(pv) ~= "table" then
                     tr.pitches[s] = { clamp(tonumber(pv) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE) }
                 end
+            elseif new_type == "split" then
+                if type(pv) == "table" then
+                    tr.pitches[s] = clamp(tonumber(pv[1]) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
+                else
+                    tr.pitches[s] = clamp(tonumber(pv) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
+                end
             else
                 if type(pv) == "table" then
                     tr.pitches[s] = clamp(tonumber(pv[1]) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
@@ -298,13 +308,29 @@ function M.install(App)
 
         tc.type = new_type
 
-        if old_type ~= "drum" and new_type == "drum" then
+        if new_type == "split" then
+            local sp = self:ensure_split_track_state(track)
+            for i = 1, cfg.SPLIT_NUM_GATES do
+                sp.pitches[i] = clamp(tonumber(tr.pitches[i]) or 1, cfg.MIN_SCALE_DEGREE, cfg.MAX_SCALE_DEGREE)
+            end
+            self:reset_split_cursors(track)
+            self:clear_split_edit(track)
+            self.track_gate_ticks[track] = clamp(tonumber(self.melody_gate_clocks) or 1, 1, 24)
+            self.transpose_seq_assign[track] = true
+        elseif new_type == "drum" then
             self.track_gate_ticks[track] = clamp(tonumber(self.drum_gate_clocks) or 1, 1, 24)
             self.transpose_seq_assign[track] = false
-        elseif old_type == "drum" and new_type ~= "drum" then
+            tr.split = nil
+            self:reset_split_cursors(track)
+        else
             self.track_gate_ticks[track] = clamp(tonumber(self.melody_gate_clocks) or 1, 1, 24)
             if self.transpose_seq_assign[track] == nil then
                 self.transpose_seq_assign[track] = true
+            end
+            if old_type == "split" then
+                tr.split = nil
+                self:reset_split_cursors(track)
+                self:clear_split_edit(track)
             end
         end
 

@@ -4,8 +4,8 @@ local swing_profiles = include("lib/sequencer/swing_profiles")
 
 local M = {}
 
-local SCALE_NAMES = { "chromatic", "diatonic", "pentatonic", "lightbath" }
-local TRACK_TYPES = { "drum", "mono", "poly" }
+local SCALE_NAMES = cfg.SCALE_NAMES
+local TRACK_TYPES = { "drum", "mono", "poly", "split" }
 local BEAT_REPEAT_MODES = { "full-row", "one-handed", "step-select" }
 local TRANSPOSE_MODES = { "semitone", "scale degree" }
 local RESET_TIMING_OPTIONS = { "instant", "next beat" }
@@ -13,7 +13,9 @@ local LPP_COLOR_ZONES = { "zone_b", "zone_c", "zone_d", "zone_e" }
 local SCALE_DEGREE_LABELS = {
     diatonic = { "I", "ii", "iii", "IV", "V", "vi", "vii" },
     pentatonic = { "I", "ii", "iii", "V", "vi" },
-    lightbath = { "I", "ii", "V", "vi" }
+    lightbath = { "I", "ii", "V", "vi" },
+    octaves_and_fifths = { "I", "V" },
+    octaves_only = { "I" }
 }
 
 local DEFAULT_SETUP_BASE_IDS = {
