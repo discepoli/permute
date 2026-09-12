@@ -46,22 +46,27 @@ function M.install(App)
 
     function App:count_manual_ties_ahead(step, tr, step_cache)
         if type(step_cache) ~= "table" then return 0 end
-        local order = self:get_track_step_order(tr)
-        local idx_of = {}
-        for i, ordered_step in ipairs(order) do
-            idx_of[ordered_step] = i
-        end
-        local idx = idx_of[step]
-        if not idx then return 0 end
+        local lo, hi, reverse = self:get_track_bounds(tr)
+        if step < lo or step > hi then return 0 end
 
         local tied = 0
-        for i = idx + 1, #order do
-            local next_step = order[i]
-            local next_data = step_cache[next_step]
-            if next_data and next_data.source == "manual" and next_data.tie then
-                tied = tied + 1
-            else
-                break
+        if reverse then
+            for next_step = step - 1, lo, -1 do
+                local next_data = step_cache[next_step]
+                if next_data and next_data.source == "manual" and next_data.tie then
+                    tied = tied + 1
+                else
+                    break
+                end
+            end
+        else
+            for next_step = step + 1, hi do
+                local next_data = step_cache[next_step]
+                if next_data and next_data.source == "manual" and next_data.tie then
+                    tied = tied + 1
+                else
+                    break
+                end
             end
         end
         return tied
@@ -197,6 +202,10 @@ function M.install(App)
                 end
             end
 
+            if self.clock_monitor_poll then
+                self:clock_monitor_poll()
+            end
+
             if self.grid_dirty then
                 self:redraw_main_grid()
                 self.grid_dirty = false
@@ -238,6 +247,7 @@ function M.install(App)
         if self.grid_timer then self.grid_timer:stop() end
         if self.gc_metro then self.gc_metro:stop() end
         if self.clock_debug_enabled then self:set_clock_debug_enabled(false) end
+        if self.clock_monitor_enabled then self:set_clock_monitor_enabled(false) end
         if self.arc_dev then
             self.arc_dev:all(0)
             self.arc_dev:refresh()

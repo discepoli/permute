@@ -83,7 +83,15 @@ function App.new()
     self.beat_repeat_select_active = false
     self.beat_repeat_select_cycle = 0
     self.speed_mode = false
-    self.save_slots = {}
+    self.track_pattern_slots = {}
+    self.track_pattern_slot_active = {}
+    self.track_pattern_slot_dirty = {}
+    self.track_pattern_slot_highest = {}
+    self.pending_pattern_switches = {}
+    self.pattern_slot_paste_pending = nil
+    self.pattern_slot_last_tap = nil
+    self.pattern_slot_dynamic_mode = "last"
+    self.pattern_slot_switch_timing = "immediate"
     self.fill_patterns = {}
     self.ratios = {}
     self.fill_active = false
@@ -244,6 +252,25 @@ function App.new()
     self.clock_debug_rate_start_ms = nil
     self.clock_debug_rate_last_ms = nil
     self.clock_debug_note_events = false
+    self.clock_monitor_enabled = false
+    self.clock_monitor_buffer = nil
+    self.clock_monitor_log_handle = nil
+    self.clock_monitor_log_path = nil
+    self.clock_monitor_flush_metro = nil
+    self.clock_monitor_last_realtime_status = nil
+    self.clock_monitor_last_realtime_port = nil
+    self.clock_monitor_last_realtime_ms = nil
+    self.clock_monitor_last_external_pulse_ms = nil
+    self.clock_monitor_last_periodic_ms = nil
+    self.clock_monitor_last_memory_check_ms = nil
+    self.clock_monitor_last_memory_kb = nil
+    self.clock_monitor_memory_jump_kb = 512
+    self.clock_monitor_last_subtick_generation = 0
+    self.clock_monitor_last_subtick_rate_ms = nil
+    self.clock_monitor_transport_error_count = 0
+    self.clock_monitor_no_pulse_alerted = false
+    self.clock_monitor_last_playing = false
+    self.clock_monitor_last_playing_change_ms = nil
 
     local track_step_limit = math.max(tonumber(cfg.MAX_STEPS) or cfg.NUM_STEPS, cfg.NUM_STEPS)
     for t = 1, cfg.NUM_TRACKS do
@@ -302,6 +329,7 @@ function App.new()
         if self.track_cfg[t].type == "split" then
             self:ensure_split_track_state(t)
         end
+        self:init_track_pattern_slots(t)
     end
 
     for s = 1, cfg.NUM_STEPS do
@@ -315,6 +343,7 @@ include("lib/core/state").install(App)
 include("lib/core/history").install(App)
 include("lib/core/presets").install(App)
 include("lib/core/clock_debug").install(App)
+include("lib/core/clock_monitor").install(App)
 include("lib/sequencer/scale").install(App)
 include("lib/sequencer/arc_pattern").install(App)
 include("lib/sequencer/spice").install(App)
@@ -323,6 +352,7 @@ include("lib/sequencer/randomization").install(App)
 include("lib/sequencer/transpose_seq").install(App)
 include("lib/sequencer/beat_repeat").install(App)
 include("lib/sequencer/split").install(App)
+include("lib/sequencer/pattern_slots").install(App)
 include("lib/io/midi").install(App)
 include("lib/io/crow").install(App)
 include("lib/io/transport").install(App)

@@ -1,107 +1,61 @@
 # permute
 
-An improvisational grid sequencer for [monome norns](https://monome.org/docs/norns/) + grid (currently zero-only). 14 tracks, 16 steps, designed for live performance. It takes all of my favorite features from my favorite sequencers and boils them down to just the essentials I need for live performance of improvised techno.
+permute is a 14-track improvisational MIDI sequencer for [monome norns](https://monome.org/docs/norns/), grid, and optional Arc, crow, MIDI, or Launchpad Pro Mk3 devices.
 
-## Overview
+## Quick start
 
-permute is a MIDI sequencer with 14 tracks laid out across a 16x16 grid. The bottom row (row 16) is a modifier row, row 15 is a dynamic context row, and rows 1-14 are track lanes. Tap steps to toggle gates, hold a step and use the dynamic row to set pitch/velocity.
-
-Tracks send MIDI note data on configurable channels. Drum tracks send a fixed note with variable velocity. Mono/poly tracks send scale-quantized pitches.
-
-## Install
-
-```
+```text
 ;install https://github.com/discepoli/permute
 ```
 
-## Controls
+Connect a grid and your MIDI sound source, launch permute, then choose the output port in `PARAMS > permute > clock + midi`. Press K2 to start. The bottom row is track 1, the top row is track 14. Press a pad in a track row to add or remove a step.
 
-**Norns hardware:**
-- **K2**: start/stop transport
-- **K3**: toggle internal/external MIDI clock
-- **E2**: change tempo
-- **E3**: select track
+On a 16×16 grid, row 15 is the dynamic row and row 16 is the modifier row. Hold a step and use the dynamic row to set a melodic step's pitch or a drum step's velocity. Hold modifier-row controls to mute, solo, randomize, change track range or speed, add temporary notes, and more.
 
-## Grid Layout
+Press the Takeover modifier to edit the selected track as a full-height pitch or velocity grid. Connect a 16×8 grid as an auxiliary editor for the selected track. Set `external midi clock` if another device provides transport, or hold K2 and press K3 to switch between internal and external clock.
+
+Use `save as default` in the params menu to remember your usual device routing and track setup at startup. Save a norns PSET when you want to store a complete musical snapshot, including pattern data.
 
 ![permute default](images/permute_default.png)
 
-| Row(s) | Function |
-|--------|----------|
-| 1-14 | Track step lanes (bottom = track 1, top = track 14) |
-| 15 | Dynamic row (pitch/velocity/parameter editing) |
-| 16 | Modifier row |
+## Grid cheat sheet
 
-Tap a step to toggle it on/off. Hold a step and use row 15 to set pitch (melodic) or velocity (drum).
+On a 16×16 grid, rows 1-14 are tracks, row 15 is the dynamic row, and row 16 is the modifier row. On a 16×8 grid, rows 1-6 are tracks, row 7 is dynamic, and row 8 is modifiers.
 
-## Modifiers (Row 16)
+| Column | Modifier | Hold it, then... |
+| --- | --- | --- |
+| 1 | Mute | Press a track to toggle mute. |
+| 2 | Solo | Press a track to toggle solo. |
+| 3 | Start | Press a step to set a track's first step. |
+| 4 | End | Press a step to set a track's last step. |
+| 5 | Track Select | Press a track to select it. Double-tap to toggle focus mode. |
+| 6 | Random Notes | Use the dynamic row to randomize notes or velocity. |
+| 7 | Random Steps | Use the dynamic row to randomize gates. |
+| 8 | Temp / Fill | Hold alone for pattern slots. Hold with Shift for temporary notes or fills. |
+| 9 | Ratios | Use the dynamic row to select a loop position and cycle. |
+| 10 | Shift | Use with the combinations below. |
+| 11 | Octave | Use the dynamic row to set the selected track's octave. |
+| 12 | Transpose | Use the dynamic row to transpose the selected track. |
+| 13 | Takeover | Enter the selected track's full-height editor. |
+| 14 | Clear | Press a track or step to clear that track. |
+| 15 | Spice | Use the dynamic row to choose accumulated pitch change, then assign it to steps. |
+| 16 | Beat Repeat | Use the dynamic row to select a temporary repeat length. |
 
-Hold a modifier key and interact with tracks/steps to apply its effect. Some modifiers can be double-tapped to latch.
+| Combination | Action |
+| --- | --- |
+| Start (3) + End (4) | Set the selected track's speed on the dynamic row. |
+| Track Select (5) + Takeover (13) | Enter or leave the transpose sequencer. |
+| Random Notes (6) + Random Steps (7) | Randomize both notes and gates from the dynamic row. |
+| Shift (10) + Start (3) | Halve the selected track's length. |
+| Shift (10) + End (4) | Double the selected track's length. |
+| Shift (10) + Random Notes (6) | Set ongoing note-randomization probability and span. |
+| Shift (10) + Random Steps (7) | Set ongoing gate-randomization probability. |
+| Shift (10) + Temp / Fill (8) | Add temporary notes or fills, according to `temp button mode`. Double-tap to latch. |
+| Shift (10) + Transpose (12) | Toggle external MIDI recording. |
+| Shift (10) + Takeover (13) | Toggle realtime grid recording. |
+| Shift (10) + Spice (15) | Undo. |
+| Shift (10) + Beat Repeat (16) | Redo. |
+| Shift (10) + Clear (14) | Clear every track. |
+| Clear (14) + another modifier | Clear that modifier's data for the selected track. Add Shift (10) to clear it for every track. |
 
-| Column | Modifier | Description |
-|--------|----------|-------------|
-| 1 | **Mute** | Mute/unmute a track |
-| 2 | **Solo** | Solo a track |
-| 3 | **Start** | Set a track's starting step |
-| 4 | **End** | Set a track's ending step |
-| 5 | *Track select* | Hold down and tap any row to select a track to modify |
-| 6 | **Rand Notes** | Randomize pitches/velocities on active steps. Use dynamic row to set intensity (1-16) |
-| 7 | **Rand Steps** | Randomize which steps are active. Dynamic row sets density (1-16) |
-| 8 | **Temp** | Add temporary steps that are removed on release. Double-tap to latch |
-| 9 | **Fill** | Place fill steps that play only while Fill is held/latched. Double-tap to latch |
-| 10 | *Shift* | Modifier combiner: Shift+Fill = save to slot (1-4), Shift+Temp = load from slot |
-| 11 | **Octave** | Set octave offset for the selected track via dynamic row (center = 0) |
-| 12 | **Transpose** | Transpose all melodic output by scale degrees via dynamic row (center = 0) |
-| 13 | **Note Takeover** | Toggle takeover mode: zooms into the selected track as a full piano-roll/velocity grid |
-| 14 | *Clear* | Clear the selected track's pattern. Clear+Shift clears all tracks. Clear+modifier clears that modifier's data |
-| 15 | **Spice** | Set a per-step pitch accumulation amount via dynamic row, then tap steps to apply. Each time a spiced step plays, its pitch shifts cumulatively |
-| 16 | **Beat Rpt** | Set a beat repeat/loop length (1-16 steps) via the dynamic row. Tracks loop within that window while held |
-
-**Combo modifiers:**
-- **Start + End** held together enters **Speed Mode** -- use the dynamic row to set per-track clock multiplier/divider
-- **Rand Notes + Rand Steps** held together randomizes both simultaneously
-- **Shift + Fill** -- save current pattern to slot (use dynamic row to select slot 1-4)
-- **Shift + Temp** -- load pattern from slot (use dynamic row to select slot 1-4)
-- **Shift + Spice** -- undo last action (up to 5 undos)
-- **Shift + Beat Rpt** -- redo last action (up to 5 redos)
-- **Shift + Clear** -- clear all tracks (instead of just the selected track)
-
-## Scales
-
-Four scale modes are available: chromatic, diatonic, pentatonic, and lightbath (a four-note subset: 1, 2, 5, 6). Scale degree/mode rotation is supported for non-chromatic scales.
-
-## Parameters (norns PARAMS menu)
-
-All settings are accessible via the norns params menu under the **permute** group:
-
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| scale | Scale type (chromatic/diatonic/pentatonic/lightbath) | diatonic |
-| key | Root note (C through B) | C |
-| scale degree | Mode rotation (I, ii, iii, etc.) | I |
-| tempo | BPM (30-300) | 145 |
-| master length | Enable a global sequence length reset | off |
-| master length steps | Steps before global reset (1-1024) | 128 |
-| external midi clock | Sync to incoming MIDI clock | off |
-| send midi clock out | Forward clock to MIDI output | on |
-| send midi start/stop out | Forward transport messages | on |
-| midi out port | MIDI output port (1-16) | 1 |
-| melody gate ticks | Note length for melodic tracks in clock ticks (1-24) | 5 |
-| drum gate ticks | Note length for drum tracks (1-12) | 1 |
-| crow enabled | Enable crow CV output | off |
-| crow out1/out2 track | Assign a track to crow outputs | 0 (off) |
-| redraw fps | Grid refresh rate (10-60) | 60 |
-| panic | All notes off | - |
-
-**Per-track params** (under each `track N config` group):
-- **track type**: drum, mono, or poly
-- **midi channel**: 1-16
-- **default note length**: 1-24 ticks
-
-## Track Configuration
-
-Default track layout is defined in `lib/config.lua` in the `TRACK_CFG` table. Edit this to change MIDI channels, note assignments, and default track types. Other constants like `NUM_TRACKS`, `NUM_STEPS`, scale definitions, and timing resolution are also in config.
-
-## Presets
-
-Presets save/load automatically through the norns PSET system. Pattern data, modifier states, save slots, and all sequence data are preserved.
+The [full manual](MANUAL.md) documents the grid, every modifier and combo, editing modes, external devices, parameters, defaults, and presets.

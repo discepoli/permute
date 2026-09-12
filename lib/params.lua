@@ -10,6 +10,9 @@ local BEAT_REPEAT_MODES = { "full-row", "one-handed", "step-select" }
 local TRANSPOSE_MODES = { "semitone", "scale degree" }
 local RESET_TIMING_OPTIONS = { "instant", "next beat" }
 local LPP_COLOR_ZONES = { "zone_b", "zone_c", "zone_d", "zone_e" }
+-- All parameters from "music" through "arc controls". Keep this in sync when
+-- adding or removing a parameter before the per-track configuration groups.
+local MAIN_PARAM_COUNT = 46
 local SCALE_DEGREE_LABELS = {
     diatonic = { "I", "ii", "iii", "IV", "V", "vi", "vii" },
     pentatonic = { "I", "ii", "iii", "V", "vi" },
@@ -38,6 +41,7 @@ local DEFAULT_SETUP_BASE_IDS = {
     "permute_send_start_stop_out",
     "permute_clock_debug",
     "permute_clock_debug_notes",
+    "permute_transport_monitor",
     "permute_midi_out",
     "permute_midi_out_2",
     "permute_midi_out_3",
@@ -80,6 +84,8 @@ local DEFAULT_SETUP_BASE_IDS = {
     "permute_beat_repeat_mode",
     "permute_beat_repeat_direction",
     "permute_temp_button_mode",
+    "permute_pattern_slot_dynamic_mode",
+    "permute_pattern_slot_switch_timing",
     "permute_arc_k1_threshold",
     "permute_arc_k2_threshold",
     "permute_arc_k3_threshold",
@@ -140,7 +146,7 @@ function M.setup(app)
     local section_count = 8
     local spacer_count = section_count - 1
     local permute_section_count = (params and params.add_separator) and (section_count + spacer_count) or 0
-    params:add_group("permute_seq", "permute", 49 + permute_section_count)
+    params:add_group("permute_seq", "permute", MAIN_PARAM_COUNT + permute_section_count)
 
     add_permute_section("permute_section_music", "music")
 
@@ -276,6 +282,11 @@ function M.setup(app)
         app.clock_debug_note_events = (v == 2)
     end)
 
+    params:add_option("permute_transport_monitor", "transport monitor", { "off", "on" }, 1)
+    params:set_action("permute_transport_monitor", function(v)
+        app:set_clock_monitor_enabled(v == 2)
+    end)
+
     params:add_option("permute_midi_out", "midi out port", midi_port_options(), 1)
     params:set_action("permute_midi_out", function(v)
         app:connect_midi_from_params()
@@ -402,6 +413,20 @@ function M.setup(app)
         app:request_aux_redraw()
     end)
 
+    add_permute_section("permute_section_pattern_slots", "pattern slots", true)
+
+    params:add_option("permute_pattern_slot_dynamic_mode", "slot dynamic mode", { "last", "all", "only" }, 1)
+    params:set_action("permute_pattern_slot_dynamic_mode", function(v)
+        local modes = { "last", "all", "only" }
+        app.pattern_slot_dynamic_mode = modes[clamp(tonumber(v) or 1, 1, #modes)] or "last"
+    end)
+
+    params:add_option("permute_pattern_slot_switch_timing", "slot switch timing", { "immediate", "bar-end", "master-end" }, 1)
+    params:set_action("permute_pattern_slot_switch_timing", function(v)
+        local modes = { "immediate", "bar-end", "master-end" }
+        app.pattern_slot_switch_timing = modes[clamp(tonumber(v) or 1, 1, #modes)] or "immediate"
+    end)
+
     add_permute_section("permute_section_note_shaping", "note shaping", true)
 
     params:add_number("permute_melody_gate_ticks", "melody gate ticks", 1, 24, 5)
@@ -493,34 +518,6 @@ function M.setup(app)
     params:add_number("permute_arc_k4_threshold", "arc k4 threshold", 1, 32, 16)
     params:set_action("permute_arc_k4_threshold", function(v)
         app.arc_delta_thresholds[4] = clamp(tonumber(v) or 16, 1, 32)
-    end)
-
-    add_permute_section("permute_section_actions", "actions", true)
-
-    params:add_trigger("permute_panic", "panic")
-    params:set_action("permute_panic", function()
-        app:stop_all_notes()
-    end)
-
-    params:add_trigger("permute_start", "start")
-    params:set_action("permute_start", function() app:start() end)
-
-    params:add_trigger("permute_stop", "stop")
-    params:set_action("permute_stop", function() app:stop() end)
-
-    params:add_trigger("permute_save_default", "save as default")
-    params:set_action("permute_save_default", function()
-        app:save_default_setup(true)
-    end)
-
-    params:add_trigger("permute_reload_default", "reload default")
-    params:set_action("permute_reload_default", function()
-        app:load_default_setup(true)
-    end)
-
-    params:add_trigger("permute_clear_default", "clear default (factory)")
-    params:set_action("permute_clear_default", function()
-        app:clear_default_setup(true)
     end)
 
     for t = 1, cfg.NUM_TRACKS do
@@ -655,6 +652,34 @@ function M.setup(app)
             if app.lpp_enabled and app.lpp_refresh_octave_leds then app:lpp_refresh_octave_leds() end
         end)
     end
+
+    add_permute_section("permute_section_actions", "actions", true)
+
+    params:add_trigger("permute_panic", "panic")
+    params:set_action("permute_panic", function()
+        app:stop_all_notes()
+    end)
+
+    params:add_trigger("permute_start", "start")
+    params:set_action("permute_start", function() app:start() end)
+
+    params:add_trigger("permute_stop", "stop")
+    params:set_action("permute_stop", function() app:stop() end)
+
+    params:add_trigger("permute_save_default", "save as default")
+    params:set_action("permute_save_default", function()
+        app:save_default_setup(true)
+    end)
+
+    params:add_trigger("permute_reload_default", "reload default")
+    params:set_action("permute_reload_default", function()
+        app:load_default_setup(true)
+    end)
+
+    params:add_trigger("permute_clear_default", "clear default (factory)")
+    params:set_action("permute_clear_default", function()
+        app:clear_default_setup(true)
+    end)
 
     params.action_write = function(filename, name, number)
         if prev_action_write then prev_action_write(filename, name, number) end

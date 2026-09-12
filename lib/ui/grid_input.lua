@@ -47,6 +47,7 @@ function M.install(App)
     end
 
     function App:get_active_mod_id()
+        if self:is_pattern_slot_mode() then return cfg.MOD.TEMP end
         if self.last_mod_pressed and self.mod_held[self.last_mod_pressed] then
             return self.last_mod_pressed
         end
@@ -67,13 +68,13 @@ function M.install(App)
 
     function App:mod_active(mod)
         if mod == cfg.MOD.TEMP then
-            if self:is_temp_button_fill_mode() then return self.mod_held[mod] or self.fill_latched end
-            return self.mod_held[mod] or self.temp_latched
+            return self:is_shift_temp_mode()
         end
         return self.mod_held[mod]
     end
 
     function App:any_mod_active()
+        if self:is_pattern_slot_mode() then return true end
         if next(self.mod_held) then return true end
         return self.temp_latched or self.fill_latched
     end
@@ -171,7 +172,7 @@ function M.install(App)
         if self.mod_held[cfg.MOD.BEAT_RPT] then return true end
         if self.mod_held[cfg.MOD.SPICE] then return true end
         if self.mod_held[cfg.MOD.RATIOS] then return true end
-        if self.mod_held[cfg.MOD.SHIFT] and self.mod_held[cfg.MOD.RATIOS] then return true end
+        if self:is_pattern_slot_mode() then return true end
         if self.speed_mode then return true end
         return false
     end
@@ -1121,6 +1122,13 @@ function M.install(App)
 
         local t = self:row_to_track(y)
         if t and t >= 1 and t <= cfg.NUM_TRACKS then
+            if self:is_pattern_slot_mode() then
+                if z == 1 and x >= 1 and x <= cfg.NUM_STEPS then
+                    self:handle_pattern_slot_press(t, x)
+                end
+                return
+            end
+
             local tc = self.track_cfg[t]
             if tc and tc.type == "split" then
                 if self:handle_split_overview_event(t, x, y, z) then

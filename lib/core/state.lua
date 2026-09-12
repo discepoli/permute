@@ -207,7 +207,7 @@ function M.install(App)
         if not tr.vels then tr.vels = {} end
         if not tr.pitches then tr.pitches = {} end
         if type(tr.arc) ~= "table" then tr.arc = {} end
-        tr.arc.pulses = clamp(tonumber(tr.arc.pulses) or 0, 0, self:get_arc_span_length(t))
+        -- Arc pulse clamp lives in get_arc_state (not every play_tracks pulse).
         tr.arc.rotation = math.floor(tonumber(tr.arc.rotation) or 1)
         tr.arc.variance = clamp(tonumber(tr.arc.variance) or 0, 0, 100)
         tr.arc.mode = self:normalize_arc_mode(tr.arc.mode, t)

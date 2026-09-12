@@ -822,8 +822,13 @@ function M.install(App)
         local is_realtime = (status == 248) or (status == 250) or (status == 251) or (status == 252)
         local from_input_port = source_port and self.midi_in_active_ports and self.midi_in_active_ports[source_port] or
         false
+        local realtime_accepted = not (is_realtime and source_port and not self:is_midi_clock_source_port(source_port))
 
-        if is_realtime and source_port and not self:is_midi_clock_source_port(source_port) then
+        if is_realtime and self.clock_monitor_record_realtime then
+            self:clock_monitor_record_realtime(status, source_port, realtime_accepted)
+        end
+
+        if not realtime_accepted then
             return
         end
 
@@ -838,6 +843,7 @@ function M.install(App)
         elseif status == 250 then
             self:reset_playheads()
             self.playing = true
+            if self.clock_monitor_set_playing then self:clock_monitor_set_playing(true, "midi_start", source_port) end
             self:reset_external_clock_sync()
             if self.use_midi_clock then
                 self.pending_follower_start_hit = true
@@ -854,6 +860,7 @@ function M.install(App)
             return
         elseif status == 251 then
             self.playing = true
+            if self.clock_monitor_set_playing then self:clock_monitor_set_playing(true, "midi_continue", source_port) end
             if self.clock_debug_enabled then
                 self:clock_debug_reset_state()
                 self:clock_debug_log(string.format("[%s] continue mode=external tempo=%s",
@@ -865,6 +872,7 @@ function M.install(App)
             return
         elseif status == 252 then
             self.playing = false
+            if self.clock_monitor_set_playing then self:clock_monitor_set_playing(false, "midi_stop", source_port) end
             if self.transport_scheduler_id then
                 clock.cancel(self.transport_scheduler_id)
                 self.transport_scheduler_id = nil
@@ -913,6 +921,7 @@ function M.install(App)
         if t == "start" then
             self:reset_playheads()
             self.playing = true
+            if self.clock_monitor_set_playing then self:clock_monitor_set_playing(true, "midi_msg_start", source_port) end
             self:reset_external_clock_sync()
             if self.use_midi_clock then
                 self.pending_follower_start_hit = true
@@ -921,10 +930,12 @@ function M.install(App)
             self:request_aux_redraw()
         elseif t == "continue" then
             self.playing = true
+            if self.clock_monitor_set_playing then self:clock_monitor_set_playing(true, "midi_msg_continue", source_port) end
             self:request_redraw()
             self:request_aux_redraw()
         elseif t == "stop" then
             self.playing = false
+            if self.clock_monitor_set_playing then self:clock_monitor_set_playing(false, "midi_msg_stop", source_port) end
             if self.transport_scheduler_id then
                 clock.cancel(self.transport_scheduler_id)
                 self.transport_scheduler_id = nil

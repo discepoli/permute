@@ -21,12 +21,14 @@ function M.install(App)
             self.step_cache[track] = nil
             self.step_cache_meta[track] = nil
             self.step_cache_rev[track] = (self.step_cache_rev[track] or 0) + 1
+            if self.mark_track_pattern_dirty then self:mark_track_pattern_dirty(track) end
             return
         end
         for t = 1, cfg.NUM_TRACKS do
             self.step_cache[t] = nil
             self.step_cache_meta[t] = nil
             self.step_cache_rev[t] = (self.step_cache_rev[t] or 0) + 1
+            if self.mark_track_pattern_dirty then self:mark_track_pattern_dirty(t) end
         end
     end
 
@@ -89,7 +91,8 @@ function M.install(App)
         end
         local tr = self.tracks[track]
         if not tr then return cfg.NUM_STEPS end
-        return math.max(1, #self:get_track_step_order(tr))
+        local lo, hi = self:get_track_bounds(tr)
+        return math.max(1, hi - lo + 1)
     end
 
     function App:get_split_gate_step_order(tr)
